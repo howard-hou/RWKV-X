@@ -1,3 +1,8 @@
+transformers
+accelerate
+peft
+more_itertools
+pytorch_lightning==1.9.5
 sacrebleu
 evaluate
 sqlitedict
