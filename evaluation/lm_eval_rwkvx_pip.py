@@ -41,7 +41,8 @@ random.seed(seed)
 
 ENGLISH_TASK_GROUP = ['lambada_openai', 'hellaswag', 'piqa', 'arc_easy', 'arc_challenge', 'winogrande', 'sciq', 'mmlu']
 MULTILINGUAL_TASK_GROUP = ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
-RULER_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3']
+RULER_SINGLE_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3']
+RULER_MULTIKEY_TASK_GROUP = ['niah_multikey_1', 'niah_multikey_2', 'niah_multikey_3']
 LONGBENCH_TASK_GROUP = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
             "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
             "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
@@ -61,7 +62,8 @@ def parse_config():
     # add a group for eval
     group = parser.add_argument_group('eval')
     group.add_argument('--eval_tasks', type=str, nargs='+', default=[], help='tasks to evaluate')
-    group.add_argument('--task_group', type=str, default='disable', choices=['english', 'ruler', 'longbench', 'disable', 'multilingual'], help='task group to evaluate')
+    group.add_argument('--task_group', type=str, default='disable', choices=[
+        'english', 'ruler_single', 'ruler_multikey', 'longbench', 'disable', 'multilingual'], help='task group to evaluate')
     group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
 
     args = parser.parse_args()
@@ -85,8 +87,10 @@ if args.task_group != 'disable':
         eval_tasks += ENGLISH_TASK_GROUP
     elif args.task_group == 'multilingual':
         eval_tasks += MULTILINGUAL_TASK_GROUP
-    elif args.task_group == 'ruler':
-        eval_tasks += RULER_TASK_GROUP
+    elif args.task_group == 'ruler_single':
+        eval_tasks += RULER_SINGLE_TASK_GROUP
+    elif args.task_group == 'ruler_multikey':
+        eval_tasks += RULER_MULTIKEY_TASK_GROUP
     elif args.task_group == 'longbench':
         eval_tasks += LONGBENCH_TASK_GROUP
     else:
