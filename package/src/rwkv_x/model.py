@@ -316,7 +316,8 @@ class CausalSparseAttention(nn.Module):
         self.max_kv_cache_size = config.max_kv_cache_size # condition that trigger the cache management
         self.kv_cache_window_size = config.kv_cache_window_size # observation window size
         self.min_kv_cache_size = config.min_kv_cache_size # minimum kv cache size
-        self.attn_mode = config.attn_mode
+        self.prefill_attn_mode = config.prefill_attn_mode # attention mode for prefill
+        self.decoding_attn_mode = config.decoding_attn_mode # attention mode for decoding
 
     def update_kv_cache(self, q, k, v):
         '''
