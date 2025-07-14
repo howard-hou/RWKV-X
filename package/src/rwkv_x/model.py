@@ -309,8 +309,8 @@ class CausalSparseAttention(nn.Module):
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        self.moba_chunk_size = config.moba_chunk_size
-        self.moba_topk = config.moba_topk
+        self.attn_chunk_size = config.attn_chunk_size
+        self.attn_topk = config.attn_topk
         self.short_sequence_criteria = config.short_sequence_criteria
         # kv cache management
         self.max_kv_cache_size = config.max_kv_cache_size # condition that trigger the cache management
@@ -385,21 +385,21 @@ class CausalSparseAttention(nn.Module):
             y = self.output(y)
             return y, k_cache, v_cache
         else:
-            reminder = CT % self.moba_chunk_size
+            reminder = CT % self.attn_chunk_size
             k_chunk, k_reminder = k_cache[:, :CT-reminder, :], k_cache[:, CT-reminder:, :]
             v_chunk, v_reminder = v_cache[:, :CT-reminder, :], v_cache[:, CT-reminder:, :]
             # split k, v into chunks
-            num_chunks = k_chunk.size(1) // self.moba_chunk_size
-            k_chunk = k_chunk.view(1, num_chunks, self.moba_chunk_size, C)
-            v_chunk = v_chunk.view(1, num_chunks, self.moba_chunk_size, C)
+            num_chunks = k_chunk.size(1) // self.attn_chunk_size
+            k_chunk = k_chunk.view(1, num_chunks, self.attn_chunk_size, C)
+            v_chunk = v_chunk.view(1, num_chunks, self.attn_chunk_size, C)
             # get chunk key
             chunk_key = k_chunk.mean(dim=2) # (1, num_chunks, C)
             # get top-k chunk
             chunk_score = torch.einsum('bqc,bkc->bqk', q, chunk_key) # (1, 1, num_chunks)
-            topk_chunk_indices = torch.topk(chunk_score, self.moba_topk, dim=-1).indices.squeeze() # (moba_topk)
+            topk_chunk_indices = torch.topk(chunk_score, self.attn_topk, dim=-1).indices.squeeze() # (attn_topk)
             # get top-k chunk key and value
-            topk_k = k_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
-            topk_v = v_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
+            topk_k = k_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, attn_topk * attn_chunk_size, C)
+            topk_v = v_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, attn_topk * attn_chunk_size, C)
             # combine with reminder and current k, v
             k_comb = torch.cat((topk_k, k_reminder, k), dim=1)
             v_comb = torch.cat((topk_v, v_reminder, v), dim=1)
@@ -447,14 +447,14 @@ class CausalSparseAttention(nn.Module):
             return y, k_cache, v_cache
         else: # chunked attention ignoring the kv cache
             # pad on right side to match the chunk size
-            pad_size = self.moba_chunk_size - (T % self.moba_chunk_size)
-            if pad_size != self.moba_chunk_size:
+            pad_size = self.attn_chunk_size - (T % self.attn_chunk_size)
+            if pad_size != self.attn_chunk_size:
                 zero_pad = torch.zeros((B, pad_size, C), dtype=x.dtype, device=x.device)
                 x = torch.cat((x, zero_pad), dim=1)
                 T = x.size(1) # update T after padding
             # fold x into chunks, merge with batch size dim
-            num_chunks = T // self.moba_chunk_size
-            x = x.view(B * num_chunks, self.moba_chunk_size, C)
+            num_chunks = T // self.attn_chunk_size
+            x = x.view(B * num_chunks, self.attn_chunk_size, C)
             new_B, new_T, C = x.size()
             q, k, v = self.receptance(x), self.key(x), self.value(x)
             k = k.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)        
@@ -467,11 +467,11 @@ class CausalSparseAttention(nn.Module):
             # output projection
             y = self.output(y)
             # unfold y, k, v into original shape
-            y = y.view(B, num_chunks*self.moba_chunk_size, C)
-            k = k.view(B, num_chunks*self.moba_chunk_size, C)
-            v = v.view(B, num_chunks*self.moba_chunk_size, C)
+            y = y.view(B, num_chunks*self.attn_chunk_size, C)
+            k = k.view(B, num_chunks*self.attn_chunk_size, C)
+            v = v.view(B, num_chunks*self.attn_chunk_size, C)
             # remove padding
-            if pad_size != self.moba_chunk_size:
+            if pad_size != self.attn_chunk_size:
                 y = y[:, :-pad_size, :]
                 k = k[:, :-pad_size, :]
                 v = v[:, :-pad_size, :]
@@ -539,12 +539,12 @@ class SparseAttentionBlock(nn.Module):
 @dataclass
 class RWKV_X_Config:
     n_rwkv_layer: int = 0
-    n_moba_layer: int = 0
+    n_attn_layer: int = 0
     n_head: int = 0
     n_embd: int = 0
     head_size: int = 64
-    moba_chunk_size: int = 2000
-    moba_topk: int = 3
+    attn_chunk_size: int = 2000
+    attn_topk: int = 3
     short_sequence_criteria: int = 8000 # if sequence length <= this, use full attention
     max_kv_cache_size: int = 20000
     kv_cache_window_size: int = 2000
@@ -556,11 +556,11 @@ class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, config=None):
         super().__init__()
         print(f'Loading {model_path} ({strategy})\n')
-        rwkv_state_dict, moba_state_dict, config = self.load_from_ckpt(model_path, strategy, config)
+        rwkv_state_dict, attn_state_dict, config = self.load_from_ckpt(model_path, strategy, config)
         self.rwkv = RWKV_x070(rwkv_state_dict).to(device=DEVICE).to(DTYPE)
-        self.moba = nn.ModuleList([SparseAttentionBlock(config) for i in range(config.n_moba_layer)])
-        self.moba.to(device=DEVICE).to(DTYPE)
-        self.moba.load_state_dict(moba_state_dict, strict=True)
+        self.attn = nn.ModuleList([SparseAttentionBlock(config) for _ in range(config.n_attn_layer)])
+        self.attn.to(device=DEVICE).to(DTYPE)
+        self.attn.load_state_dict(attn_state_dict, strict=True)
         self.config = config
 
     def load_from_ckpt(self, model_path, strategy, config=None):
@@ -583,31 +583,36 @@ class RWKV_X(nn.Module):
             raise FileNotFoundError(f"Model path {model_path} does not exist.")
 
         rwkv_state_dict = {k[5:]: v for k, v in ckpt.items() if k.startswith("rwkv.")}
-        moba_state_dict = {k[5:]: v for k, v in ckpt.items() if k.startswith("moba.")}
+        attn_state_dict = {k[5:]: v for k, v in ckpt.items() if k.startswith("moba.")}
 
         n_embd = rwkv_state_dict['emb.weight'].shape[1]
         n_head = n_embd // 64
         n_rwkv_layer = len({k.split('.')[1] for k in rwkv_state_dict if k.startswith("blocks.")})
-        n_moba_layer = len({k.split('.')[0] for k in moba_state_dict if k[0].isdigit()})
+        n_attn_layer = len({k.split('.')[0] for k in attn_state_dict if k[0].isdigit()})
         if config is None:
             config = RWKV_X_Config(
                 n_rwkv_layer=n_rwkv_layer,
-                n_moba_layer=n_moba_layer,
+                n_attn_layer=n_attn_layer,
                 n_head=n_head,
                 n_embd=n_embd,
             )
         else:
             config = RWKV_X_Config(
                 n_rwkv_layer=n_rwkv_layer,
-                n_moba_layer=n_moba_layer,
+                n_attn_layer=n_attn_layer,
                 n_head=n_head,
                 n_embd=n_embd,
-                moba_chunk_size=config.moba_chunk_size,
-                moba_topk=config.moba_topk,
+                attn_chunk_size=config.attn_chunk_size,
+                attn_topk=config.attn_topk,
                 max_kv_cache_size=config.max_kv_cache_size,
-                attn_mode=config.attn_mode
+                prefill_attn_mode=config.prefill_attn_mode,
+                deocoding_attn_mode=config.deocoding_attn_mode,
+                short_sequence_criteria=config.short_sequence_criteria,
+                kv_cache_window_size=config.kv_cache_window_size,
+                min_kv_cache_size=config.min_kv_cache_size,
+                head_size=config.head_size
             )
-        return rwkv_state_dict, moba_state_dict, config
+        return rwkv_state_dict, attn_state_dict, config
 
 
     @torch.inference_mode()
@@ -618,14 +623,14 @@ class RWKV_X(nn.Module):
                 rwkv_state[i*3+0] = torch.zeros(self.config.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
                 rwkv_state[i*3+1] = torch.zeros((self.config.n_embd // self.config.head_size, self.config.head_size, self.config.head_size), dtype=torch.float, requires_grad=False, device=DEVICE)
                 rwkv_state[i*3+2] = torch.zeros(self.config.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
-            moba_state = []
-            for _ in range(self.config.n_moba_layer):
-                moba_state.append({
+            attn_state = []
+            for _ in range(self.config.n_attn_layer):
+                attn_state.append({
                     'k_cache': torch.zeros((1, 0, self.config.n_embd), dtype=DTYPE, device=DEVICE, requires_grad=False),
                     'v_cache': torch.zeros((1, 0, self.config.n_embd), dtype=DTYPE, device=DEVICE, requires_grad=False),
                     'ffn_x_prev':  torch.zeros(self.config.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
                 })
-            state = {'rwkv': rwkv_state, 'moba': moba_state}
+            state = {'rwkv': rwkv_state, 'attn': attn_state}
 
         if type(idx) is list:
             if len(idx) > 1:
@@ -640,14 +645,14 @@ class RWKV_X(nn.Module):
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
 
-        rwkv_id, moba_id = 0, 0
+        rwkv_id, attn_id = 0, 0
         for block in self.get_block_exe_order():
             if isinstance(block, RWKVBlock):
                 x, state['rwkv'], v_first = block.forward_one(x, state['rwkv'], v_first)
                 rwkv_id += 1
             else:
-                x, state['moba'][moba_id] = block.forward_one(x, state['moba'][moba_id])
-                moba_id += 1
+                x, state['attn'][attn_id] = block.forward_one(x, state['attn'][attn_id])
+                attn_id += 1
 
         x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
@@ -658,14 +663,14 @@ class RWKV_X(nn.Module):
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
 
-        rwkv_id, moba_id = 0, 0
+        rwkv_id, attn_id = 0, 0
         for block in self.get_block_exe_order():
             if isinstance(block, RWKVBlock):
                 x, state['rwkv'], v_first = block.forward_seq(x, state['rwkv'], v_first)
                 rwkv_id += 1
             else:
-                x, state['moba'][moba_id] = block.forward_seq(x, state['moba'][moba_id])
-                moba_id += 1
+                x, state['attn'][attn_id] = block.forward_seq(x, state['attn'][attn_id])
+                attn_id += 1
 
         if not full_output:
             x = x[-1]
@@ -674,14 +679,14 @@ class RWKV_X(nn.Module):
         return x, state
     
     def get_block_exe_order(self):
-        if self.config.n_moba_layer == 0:
+        if self.config.n_attn_layer == 0:
             return self.rwkv.blocks
-        if self.config.n_moba_layer == 1:
-            blocks = self.rwkv.blocks + self.moba
+        if self.config.n_attn_layer == 1:
+            blocks = self.rwkv.blocks + self.attn
             return blocks
-        interval = len(self.rwkv.blocks) // self.config.n_moba_layer # 12 // 4 = 3
-        blocks = [] # [RWKVBlock * interval, MOBABlock, RWKVBlock * interval, MOBABlock, ...]
-        for i in range(self.config.n_moba_layer):
+        interval = len(self.rwkv.blocks) // self.config.n_attn_layer # 12 // 4 = 3
+        blocks = [] # [RWKVBlock * interval, AttnBlock, RWKVBlock * interval, AttnBlock, ...]
+        for i in range(self.config.n_attn_layer):
             blocks += self.rwkv.blocks[i * interval: (i + 1) * interval]
-            blocks.append(self.moba[i])
+            blocks.append(self.attn[i])
         return blocks
