@@ -311,7 +311,7 @@ class CausalSparseAttention(nn.Module):
         self.n_embd = config.n_embd
         self.moba_chunk_size = config.moba_chunk_size
         self.moba_topk = config.moba_topk
-        self.window_size = config.moba_chunk_size * config.moba_topk
+        self.short_sequence_criteria = config.short_sequence_criteria
         # kv cache management
         self.max_kv_cache_size = config.max_kv_cache_size # condition that trigger the cache management
         self.kv_cache_window_size = config.kv_cache_window_size # observation window size
@@ -367,12 +367,12 @@ class CausalSparseAttention(nn.Module):
         assert x.size(1) == 1, "sequence length must be 1"
         C = x.size(-1)
         q, k, v = self.receptance(x), self.key(x), self.value(x)
-        # manage k, v cache
-        if self.max_kv_cache_size > 0 and k_cache.size(1) > self.max_kv_cache_size:
+        # manage k, v cache, only when not use full attention
+        if self.deocoding_attn_mode != 'full' and k_cache.size(1) > self.max_kv_cache_size:
             k_cache, v_cache = self.update_kv_cache(q, k_cache, v_cache)
         CT = k_cache.size(1)
         # apply the attention, only decoding consider the full attention mode
-        if CT <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
+        if CT <= self.short_sequence_criteria or self.deocoding_attn_mode == 'full': # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
             q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, nh, 1, hs)
@@ -424,12 +424,12 @@ class CausalSparseAttention(nn.Module):
         if len(x.shape) == 2:
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
-        # manage k, v cache
-        if self.max_kv_cache_size > 0 and k_cache.size(1) > self.max_kv_cache_size:
+        # manage k, v cache, only when not use full attention
+        if self.attn_mode != 'full' and k_cache.size(1) > self.max_kv_cache_size:
             k_cache, v_cache = self.update_kv_cache(x, k_cache, v_cache)
         CT = k_cache.size(1) # cache seq length
         # apply the attention
-        if (T+CT) <= self.window_size: # for short sequence, use full attention
+        if (T+CT) <= self.short_sequence_criteria or self.prefill_attn_mode == 'full': # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
             # prefix mask
             causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
@@ -538,17 +538,19 @@ class SparseAttentionBlock(nn.Module):
 
 @dataclass
 class RWKV_X_Config:
-    n_rwkv_layer: int = None
-    n_moba_layer: int = None
-    n_head: int = None
-    n_embd: int = None
-    moba_chunk_size: int = 2048
-    moba_topk: int = 3
+    n_rwkv_layer: int = 0
+    n_moba_layer: int = 0
+    n_head: int = 0
+    n_embd: int = 0
     head_size: int = 64
+    moba_chunk_size: int = 2000
+    moba_topk: int = 3
+    short_sequence_criteria: int = 8000 # if sequence length <= this, use full attention
     max_kv_cache_size: int = 20000
     kv_cache_window_size: int = 2000
     min_kv_cache_size: int = 16000
-    attn_mode: str = 'sparse' # 'sparse' or 'full'
+    prefill_attn_mode: str = 'chunk' # 'chunk' or 'full'
+    deocoding_attn_mode: str = 'full' # 'full' or 'snapKV' or 'new'
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, config=None):
@@ -593,8 +595,6 @@ class RWKV_X(nn.Module):
                 n_moba_layer=n_moba_layer,
                 n_head=n_head,
                 n_embd=n_embd,
-                moba_chunk_size=2048,
-                moba_topk=3
             )
         else:
             config = RWKV_X_Config(
