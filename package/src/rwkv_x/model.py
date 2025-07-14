@@ -369,11 +369,11 @@ class CausalSparseAttention(nn.Module):
         C = x.size(-1)
         q, k, v = self.receptance(x), self.key(x), self.value(x)
         # manage k, v cache, only when not use full attention
-        if self.deocoding_attn_mode != 'full' and k_cache.size(1) > self.max_kv_cache_size:
+        if self.decoding_attn_mode != 'full' and k_cache.size(1) > self.max_kv_cache_size:
             k_cache, v_cache = self.update_kv_cache(q, k_cache, v_cache)
         CT = k_cache.size(1)
         # apply the attention, only decoding consider the full attention mode
-        if CT <= self.short_sequence_criteria or self.deocoding_attn_mode == 'full': # for short sequence, use full attention
+        if CT <= self.short_sequence_criteria or self.decoding_attn_mode == 'full': # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
             q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, nh, 1, hs)
@@ -551,7 +551,7 @@ class RWKV_X_Config:
     kv_cache_window_size: int = 2000
     min_kv_cache_size: int = 16000
     prefill_attn_mode: str = 'chunk' # 'chunk' or 'full'
-    deocoding_attn_mode: str = 'full' # 'full' or 'snapKV' or 'new'
+    decoding_attn_mode: str = 'full' # 'full' or 'snapKV' or 'new'
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, config=None):
@@ -607,7 +607,7 @@ class RWKV_X(nn.Module):
                 attn_topk=config.attn_topk,
                 max_kv_cache_size=config.max_kv_cache_size,
                 prefill_attn_mode=config.prefill_attn_mode,
-                deocoding_attn_mode=config.deocoding_attn_mode,
+                decoding_attn_mode=config.decoding_attn_mode,
                 short_sequence_criteria=config.short_sequence_criteria,
                 kv_cache_window_size=config.kv_cache_window_size,
                 min_kv_cache_size=config.min_kv_cache_size,
