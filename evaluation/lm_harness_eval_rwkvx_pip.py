@@ -70,6 +70,15 @@ class RWKVXEvalWrapper(HFLM):
         self.STOP_TOKEN = self.RWKV_PAD + self.tokenizer.encode('\n\n') # we will use '\n\n' as STOP
         print('RWKV_PAD', self.RWKV_PAD)
         print('STOP_TOKEN', self.STOP_TOKEN)
+        self.backend = "causal"
+        self.revision = "main"
+        self.pretrained = pretrained
+        self.delta = None
+        self.peft = None
+        self.batch_schedule = 1
+        self.batch_sizes = {}
+        self.max_batch_size = 1
+        self.batch_size_per_gpu = int(batch_size)
 
     @property
     def max_length(self):
