@@ -111,7 +111,7 @@ if __name__ == "__main__":
         f"""
 ############################################################################
 #
-# RWKV-5 {args.precision.upper()} on {args.num_nodes}x{args.devices} {args.accelerator.upper()}, bsz {args.num_nodes}x{args.devices}x{args.micro_bsz}={args.real_bsz}, {args.strategy} {'with grad_cp' if args.grad_cp > 0 else ''}
+# RWKV-X {args.precision.upper()} on {args.num_nodes}x{args.devices} {args.accelerator.upper()}, bsz {args.num_nodes}x{args.devices}x{args.micro_bsz}={args.real_bsz}, {args.strategy} {'with grad_cp' if args.grad_cp > 0 else ''}
 #
 # Data = {args.data_file} ({args.data_type}), ProjDir = {args.proj_dir}
 #
@@ -173,6 +173,7 @@ if __name__ == "__main__":
         moba_chunk_size=args.moba_chunk_size,
         moba_topk=args.moba_topk,
     )
+    model.rwkv.emb.requires_grad_(False) # speed up 4x, but no effect on loss
     args.tokenizer = tokenizer
 
     train_data = MyDataset(args)
