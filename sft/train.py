@@ -173,6 +173,7 @@ if __name__ == "__main__":
         moba_chunk_size=args.moba_chunk_size,
         moba_topk=args.moba_topk,
     )
+    model.rwkv.emb.requires_grad_(False)
     args.tokenizer = tokenizer
 
     train_data = MyDataset(args)
