@@ -54,10 +54,11 @@ class TokenizerWrapper:
 
 @register_model("RWKV-X")
 class RWKVXEvalWrapper(HFLM):
-    def __init__(self, pretrained=None, config=None, max_length=4096, device="cuda",
-                 dtype=torch.float16):
+    def __init__(self, pretrained=None, config=None, max_length=4096, batch_size=1, 
+                 device="cuda", dtype=torch.float16):
         strategy = 'cuda' if device == 'cuda' else 'cpu'
         strategy += ' fp16' if dtype == torch.float16 else ' fp32'
+        print("Using strategy:", strategy)
         self._model = RWKV_X(model_path=pretrained, strategy=strategy)
         pipeline = PIPELINE(self._model)
         self.tokenizer = TokenizerWrapper(pipeline.tokenizer)
