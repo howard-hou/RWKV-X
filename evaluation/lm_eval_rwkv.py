@@ -43,7 +43,9 @@ ENGLISH_TASK_GROUP = ['lambada_openai', 'hellaswag', 'piqa', 'arc_easy', 'arc_ch
 MULTILINGUAL_TASK_GROUP = ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
 RULER_SINGLE_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3']
 RULER_MULTIKEY_TASK_GROUP = ['niah_multikey_1', 'niah_multikey_2', 'niah_multikey_3']
-RULER_TASK_GROUP = RULER_SINGLE_TASK_GROUP + RULER_MULTIKEY_TASK_GROUP
+RULER_INFO_TASK_GROUP = ['ruler_cwe', 'ruler_fwe', 'ruler_vt']
+RULER_QA_TASK_GROUP = ['ruler_qa_hotpot', 'ruler_qa_squad']
+RULER_TASK_GROUP = RULER_SINGLE_TASK_GROUP + RULER_MULTIKEY_TASK_GROUP + RULER_INFO_TASK_GROUP + RULER_QA_TASK_GROUP
 LONGBENCH_TASK_GROUP = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
             "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
             "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
