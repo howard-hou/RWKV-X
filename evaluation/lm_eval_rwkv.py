@@ -58,15 +58,11 @@ def parse_config():
     parser.add_argument('model_path', type=str)
     parser.add_argument('--log_dir', type=str, default='logs/lm_eval/')
     parser.add_argument('--device', type=str, default='cuda:0')
-    # add a group for moba
-    group = parser.add_argument_group('moba')
-    group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
-    group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
     # add a group for eval
     group = parser.add_argument_group('eval')
     group.add_argument('--eval_tasks', type=str, nargs='+', default=[], help='tasks to evaluate')
     group.add_argument('--task_group', type=str, default='disable', choices=['english', 'ruler', 'longbench', 'disable', 'multilingual'], help='task group to evaluate')
-    group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
+    group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[4000], help='max sequence lengths for ruler')
 
     args = parser.parse_args()
     return args
