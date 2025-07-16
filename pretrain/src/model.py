@@ -504,7 +504,7 @@ class RWKVHybrid(pl.LightningModule):
             x = x[:, num_tokens_to_pad:]
         return x
     
-    def compute_longce_loss(self, input_ids, targets, trunc_len=4000, internal=4000, thre=10):
+    def compute_longce_loss(self, input_ids, targets, trunc_len=4000, internal=4000, thre=5):
         """
         LongCE: Dynamically adjusts token-wise loss weights based on the discrepancy 
         between global and truncated local sequence losses.
