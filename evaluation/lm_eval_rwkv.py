@@ -369,5 +369,5 @@ pprint.pprint(eval_results)
 # convert results to a table
 import pandas as pd
 df = pd.DataFrame(eval_results)
-df.to_csv('' + OUTPUT_DIR / 'eval_results.csv', index=False)
+df.to_csv(OUTPUT_DIR / 'eval_results.csv', index=False)
 print(f"Evaluation results saved to {OUTPUT_DIR / 'eval_results.csv'}")
