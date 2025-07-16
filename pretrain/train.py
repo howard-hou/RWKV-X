@@ -219,7 +219,7 @@ if __name__ == "__main__":
     if args.load_pretrain:
         rank_zero_info(f"########## Loading Pretrain {args.load_pretrain}... ##########")
         load_dict = torch.load(args.load_pretrain, map_location="cpu", weights_only=False)
-        rwkv.load_state_dict(load_dict)
+        rwkv.load_state_dict(load_dict, strict=False)
 
     ### init hybrid ###
     from dataclasses import dataclass
