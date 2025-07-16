@@ -361,17 +361,13 @@ if longbench_tasks:
         eval_tasks=longbench_task_real_names,
     )
     eval_results.update(results['results'])
-# convert results to a table
-import pandas as pd
-df = pd.DataFrame(eval_results)
-task_str = args.task_group if args.task_group != 'disable' else '-'.join(eval_tasks[:3])
-context_str = f"{args.max_seq_lengths[0]//1000}k-{args.max_seq_lengths[-1]//1000}k"
-model_stem = Path(MODEL_NAME).stem + f"_CS{args.moba_chunk_size}-TK{args.moba_topk}"
-metric_output_name = model_stem + "_" + task_str + "_" + context_str +".csv"
-metric_output_path = OUTPUT_DIR / metric_output_name
-df.to_csv(metric_output_path)
-print(f"Evaluation results saved to {metric_output_path}")
+
 # pretty print the results
 print("Evaluation results:")
 import pprint
 pprint.pprint(eval_results)
+# convert results to a table
+import pandas as pd
+df = pd.DataFrame(eval_results)
+df.to_csv('' + OUTPUT_DIR / 'eval_results.csv', index=False)
+print(f"Evaluation results saved to {OUTPUT_DIR / 'eval_results.csv'}")
