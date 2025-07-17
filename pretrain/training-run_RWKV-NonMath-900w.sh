@@ -20,7 +20,7 @@ MOBA_TOPK="30000000"
 CTX_LEN="4096" # !!! change magic_prime if you change ctx_len !!!
 WANDB="RWKV-NonMath-900w"
 export WANDB_MODE=offline
-RUN_NAME="minipile_L"$N_LAYER"-D"$N_EMBD"-C"$CTX_LEN"_ML"$N_MOBA_LAYER
+RUN_NAME="RWKV-NonMath-900w_L"$N_LAYER"-D"$N_EMBD"-C"$CTX_LEN"_ML"$N_MOBA_LAYER
 PROJ_DIR="out/$RUN_NAME"
 #
 MODEL_FILE="out/minipile_L12-D768-C512_ML4/rwkv-final.pth"
@@ -36,8 +36,8 @@ MAGIC_PRIME="2701277"
 # Finetuning => use very small LR, such as 1e-5
 #
 M_BSZ="10" # takes ~9G VRAM here => reduce this to save VRAM, increase this for faster speed
-LR_INIT="5e-5"
-LR_FINAL="2e-5"
+LR_INIT="1e-5"
+LR_FINAL="1e-5"
 GRAD_CP=1 # 1 => not working when freezing rwkv
 EPOCH_SAVE=50 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens) => decrease if your GPU is weak
 #
