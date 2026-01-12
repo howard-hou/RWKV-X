@@ -82,7 +82,7 @@ def RWKV_x070_TMix_one(layer_id: int, H:int, N:int, x, x_prev, v_first, state, x
 
     xx = torch.nn.functional.group_norm(xx.view(1,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(H*N)    
     xx = xx + ((r * k * r_k).view(H,N).sum(dim=-1, keepdim=True) * v.view(H,N)).view(H*N)
-    return (xx * g) @ O_, x, state, v_first
+    return (xx * g) @ O_, x, state, v_first, k, v
 
 if os.environ.get('RWKV_CUDA_ON') == '1':
     @MyStatic
@@ -108,7 +108,7 @@ if os.environ.get('RWKV_CUDA_ON') == '1':
 
         xx = torch.nn.functional.group_norm(xx.view(T,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(T,H*N)
         xx = xx + ((r * k * r_k).view(T,H,N).sum(dim=-1, keepdim=True) * v.view(T,H,N)).view(T,H*N)
-        return (xx * g) @ O_, x[-1,:], state, v_first
+        return (xx * g) @ O_, x[-1,:], state, v_first, k, v
 else:
     @MyStatic
     def RWKV_x070_TMix_seq(layer_id: int, H:int, N:int, x, x_prev, v_first, state, x_r, x_w, x_k, x_v, x_a, x_g, w0, w1, w2, a0, a1, a2, v0, v1, v2, g1, g2, k_k, k_a, r_k, R_, K_, V_, O_, ln_w, ln_b):
@@ -138,7 +138,7 @@ else:
 
         xx = torch.nn.functional.group_norm(xx.view(T,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(T,H*N)
         xx = xx + ((r * k * r_k).view(T,H,N).sum(dim=-1, keepdim=True) * v.view(T,H,N)).view(T,H*N)
-        return (xx * g) @ O_, x[-1,:], state, v_first
+        return (xx * g) @ O_, x[-1,:], state, v_first, k, v
 
 
 
@@ -226,11 +226,11 @@ class RWKV_x070(MyModule):
         v_first = torch.empty_like(x)
 
         for block in self.blocks:
-            x, state, v_first = block.forward_one(x, state, v_first)
+            x, state, v_first, k, v = block.forward_one(x, state, v_first)
 
         x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
-        return x, state
+        return x, state, k, v
 
     @torch.inference_mode()
     def forward_seq(self, idx: List[int], state: List[torch.Tensor], full_output: bool = False):
@@ -239,14 +239,14 @@ class RWKV_x070(MyModule):
         v_first = torch.empty_like(x)
 
         for block in self.blocks:
-            x, state, v_first = block.forward_seq(x, state, v_first)
+            x, state, v_first, k, v = block.forward_seq(x, state, v_first)
 
         if not full_output:
             x = x[-1]
 
         x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
-        return x, state
+        return x, state, k, v
 
 
 class RWKVBlock(nn.Module):
@@ -264,7 +264,7 @@ class RWKVBlock(nn.Module):
         bbb, att, ffn = f'blocks.{i}.', f'blocks.{i}.att.', f'blocks.{i}.ffn.'
 
         xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
-        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+        xx, state[i*3+0], state[i*3+1], v_first, k, v = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
             z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
             z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
             z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
@@ -276,7 +276,7 @@ class RWKVBlock(nn.Module):
         xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
         x = x + xx
 
-        return x, state, v_first
+        return x, state, v_first, k, v
 
     def forward_seq(self, x, state, v_first):
         i = self.layer_id
@@ -285,7 +285,7 @@ class RWKVBlock(nn.Module):
 
         xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
 
-        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+        xx, state[i*3+0], state[i*3+1], v_first, k, v = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
             z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
             z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
             z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
@@ -297,7 +297,7 @@ class RWKVBlock(nn.Module):
         xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
         x = x + xx
 
-        return x, state, v_first
+        return x, state, v_first, k, v
 
 
 ########################################################################################################
@@ -357,23 +357,29 @@ class RWKV_EXP(nn.Module):
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
 
+        k_list, v_list = [], []
         for block in self.rwkv.blocks:
-            x, state, v_first = block.forward_one(x, state, v_first)
+            x, state, v_first, k, v = block.forward_one(x, state, v_first)
+            k_list.append(k)
+            v_list.append(v)
 
         x = F.layer_norm(x, (self.args.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
-        return x, state
+        return x, state, k_list, v_list
     
     def forward_seq(self, idx: List[int], state: list, full_output=False):
         z = self.rwkv.z
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
 
+        k_list, v_list = [], []
         for block in self.rwkv.blocks:
-            x, state, v_first = block.forward_seq(x, state, v_first)
-
+            x, state, v_first, k, v = block.forward_seq(x, state, v_first)
+            k_list.append(k)
+            v_list.append(v)
+            
         if not full_output:
             x = x[-1]
         x = F.layer_norm(x, (self.args.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
-        return x, state
+        return x, state, k_list, v_list
