@@ -214,7 +214,7 @@ class RWKV_x070(MyModule):
 
         # core modification: construct block list
         self.blocks = nn.ModuleList([
-            RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd)
+            RWKVBlock(i, self.z, self.n_head, self.head_size, self.n_embd)
             for i in range(self.n_layer)
         ])
         torch.cuda.empty_cache()
@@ -327,6 +327,7 @@ class RWKV_CMix_x070(nn.Module):
 class RWKV_EXP(nn.Module):
     def __init__(self, model_path, strategy, config=None):
         super().__init__()
+        model_path = model_path.replace('.pth', '')
         self.rwkv = RWKV_x070(model_path, strategy)
         self.args = self.rwkv.args
 
