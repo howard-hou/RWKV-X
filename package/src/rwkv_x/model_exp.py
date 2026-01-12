@@ -325,7 +325,7 @@ class RWKV_CMix_x070(nn.Module):
     
 
 class RWKV_EXP(nn.Module):
-    def __init__(self, model_path, strategy, config=None):
+    def __init__(self, model_path, strategy):
         super().__init__()
         model_path = model_path.replace('.pth', '')
         self.rwkv = RWKV_x070(model_path, strategy)
@@ -360,7 +360,7 @@ class RWKV_EXP(nn.Module):
         for block in self.rwkv.blocks:
             x, state, v_first = block.forward_one(x, state, v_first)
 
-        x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+        x = F.layer_norm(x, (self.args.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
         return x, state
     
@@ -374,6 +374,6 @@ class RWKV_EXP(nn.Module):
 
         if not full_output:
             x = x[-1]
-        x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+        x = F.layer_norm(x, (self.args.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
         return x, state
