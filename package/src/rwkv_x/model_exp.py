@@ -352,26 +352,25 @@ class RWKV_EXP(nn.Module):
         else:
             return self.forward_one(idx, state)
         
-    def forward_one(self, idx: int, state: dict):
+    def forward_one(self, idx: int, state: list):
         z = self.rwkv.z
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
 
-        rwkv_id, attn_id = 0, 0
         for block in self.rwkv.blocks:
-            x, state['rwkv'], v_first = block.forward_one(x, state['rwkv'], v_first)
+            x, state, v_first = block.forward_one(x, state, v_first)
 
         x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
         return x, state
     
-    def forward_seq(self, idx: List[int], state: dict, full_output=False):
+    def forward_seq(self, idx: List[int], state: list, full_output=False):
         z = self.rwkv.z
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
 
         for block in self.rwkv.blocks:
-            x, state['rwkv'], v_first = block.forward_seq(x, state['rwkv'], v_first)
+            x, state, v_first = block.forward_seq(x, state, v_first)
 
         if not full_output:
             x = x[-1]
