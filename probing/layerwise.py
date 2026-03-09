@@ -163,6 +163,7 @@ print(f"Saved layer statistics to: {stats_csv_path}")
 # =========================
 # save raw csv
 # =========================
+from pathlib import Path
 model_name = Path(sys.argv[1]).stem
 raw_csv_path = model_name + "-layer_memory_loss_raw.csv"
 with open(raw_csv_path, "w", newline="", encoding="utf-8") as f:
