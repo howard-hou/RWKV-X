@@ -178,10 +178,11 @@ for (D, layer_idx) in sorted(dist_layer_losses.keys()):
 
 print("\n" + "=" * 80)
 for D in D_list:
-    last_layer_index = max(all_layer_means[D].keys())
-    last_layer = all_layer_means[D][last_layer_index]
+    # max loss layer index
+    max_layer_index = max(all_layer_means[D].keys(), key=lambda idx: all_layer_means[D][idx])
+    max_layer = all_layer_means[D][max_layer_index]
     acc = D2acc[D]
-    print(f"Distance {D} | Last Layer Memory Loss: {last_layer:.6f} | Accuracy: {acc:.4f}")
+    print(f"Distance {D} | Max Memory Loss: {max_layer:.6f} | Accuracy: {acc:.4f}")
 print("=" * 80)
 
 # =========================
