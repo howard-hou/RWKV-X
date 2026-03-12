@@ -5,6 +5,7 @@ measure the memory loss of a single token at each layer, and how it changes with
 '''
 # !!! set these before import RWKV !!!
 from collections import defaultdict
+from operator import gt, is_
 import os
 os.environ["RWKV_CUDA_ON"] = '1'  # '1' to compile CUDA kernel (10x faster), requires c++ compiler & cuda libraries
 
@@ -16,12 +17,20 @@ from rwkv_x.model_exp import RWKV_EXP
 from rwkv_x.utils import PIPELINE
 
 VALUE_TOKEN_IDX = 54997 # Einstein
+VALUE_TOKEN_LIST = list(range(VALUE_TOKEN_IDX, VALUE_TOKEN_IDX + 20)) #
 
 # download models: https://huggingface.co/BlinkDL/rwkv7-g1
 model = RWKV_EXP(model_path=sys.argv[1], strategy='cuda fp16')
 tokenizer = PIPELINE(model).tokenizer
+from pathlib import Path
+model_name = Path(sys.argv[1]).stem
 
-
+information_line = f"The pass key is"
+information_tokens = tokenizer.encode(information_line) # 5 tokens
+all_passkey_tokens = []
+for idx in VALUE_TOKEN_LIST:
+    passkey_tokens = information_tokens + [idx]
+    all_passkey_tokens.append(passkey_tokens)
 # =========================
 # state probing
 # =========================
@@ -94,24 +103,55 @@ garbage = "The grass is green. The sky is blue. The sun is yellow. Here we go. T
 garbage_tokens = tokenizer.encode(garbage) # 24 tokens
 prefix_tokens = garbage_tokens * 5 # 120 tokens
 suffix_tokens = garbage_tokens * 1000 # 24000 tokens
-for D in D_list:
-    # insert value token at position (T-D)
-    tokens = prefix_tokens + [VALUE_TOKEN_IDX] + suffix_tokens[:D]
-    p = len(prefix_tokens) # position of the value token
-    out, state, k_list, v_list = model.forward(tokens, None)
+correct_count = defaultdict(int)
+for passkey_tokens in tqdm(all_passkey_tokens):
+    # print(f"Passkey decoded: '{tokenizer.decode(passkey_tokens)}'")
+    for D in D_list:
+        # insert value token at position (T-D)
+        tokens = prefix_tokens + passkey_tokens + suffix_tokens[:D]
+        p = len(prefix_tokens) + 4 # position of the value token
+        out, state, k_list, v_list = model.forward(tokens, None)
+        # num of layers [L]
+        layer_memory_loss = calculate_layer_memory_loss(state, k_list, v_list, p)
 
-    # num of layers [L]
-    layer_memory_loss = calculate_layer_memory_loss(state, k_list, v_list, p)
+        for layer_idx, loss in enumerate(layer_memory_loss):
+            loss_val = loss.item()
+            dist_layer_losses[(D, layer_idx)].append(loss_val)
+            raw_records.append({
+                "layer": layer_idx,
+                "distance": D,
+                "memory_loss": loss_val,
+            })
+        # QA test
+        final_question = "What is the pass key? The pass key is"
+        question_tokens = tokenizer.encode(final_question)
+        logits, state, _, _ = model(question_tokens, state)
+        pred_token = torch.argmax(logits).item()
+        gt_token = passkey_tokens[-1]
+        is_correct = (pred_token == gt_token)
+        # print(gt_token, pred_token, is_correct)
+        if is_correct:
+            correct_count[D] += 1
 
-    for layer_idx, loss in enumerate(layer_memory_loss):
-        loss_val = loss.item()
-        dist_layer_losses[(D, layer_idx)].append(loss_val)
-        raw_records.append({
-            "layer": layer_idx,
+D2acc = {}
+for D in correct_count:
+    cnt = correct_count[D]
+    acc = cnt / len(all_passkey_tokens)
+    D2acc[D] = acc
+    print(f"Distance {D} | Accuracy: {acc:.4f}")
+dist_acc_csv_path = model_name + ".dist_accuracy.csv"
+with open(dist_acc_csv_path, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(
+        f,
+        fieldnames=["distance", "accuracy"]
+    )
+    writer.writeheader()
+    for D in sorted(D2acc.keys()):
+        writer.writerow({
             "distance": D,
-            "memory_loss": loss_val,
+            "accuracy": D2acc[D]
         })
-
+print(f"Saved distance-accuracy statistics to: {dist_acc_csv_path}")
 
 # =========================
 # print overall per-layer stats
@@ -139,28 +179,17 @@ for (D, layer_idx) in sorted(dist_layer_losses.keys()):
     }
     stats_records.append(record)
 
-    print(
-        f"Layer {layer_idx:02d} | "
-        f"Distance {D} | "
-        f"count={record['count']:4d} | "
-        f"mean={record['mean']:.6f} | "
-        f"var={record['var']:.6f} | "
-        f"min={record['min']:.6f} | "
-        f"max={record['max']:.6f} | "
-        f"median={record['median']:.6f}"
-    )
-
-print("\n" + "=" * 80)
-for D in D_list:
-    last_layer_index = max(all_layer_means[D].keys())
-    last_layer = all_layer_means[D][last_layer_index]
-    print(f"Distance {D} | Last Layer Memory Loss: {last_layer:.6f}")
-print("=" * 80)
+# print("\n" + "=" * 80)
+# for D in D_list:
+#     last_layer_index = max(all_layer_means[D].keys())
+#     last_layer = all_layer_means[D][last_layer_index]
+#     print(f"Distance {D} | Last Layer Memory Loss: {last_layer:.6f}")
+# print("=" * 80)
 
 # =========================
 # save stats csv
 # =========================
-stats_csv_path = "dist_layer_memory_loss_stats.csv"
+stats_csv_path = model_name + ".dist_layer_memory_loss_stats.csv"
 with open(stats_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
@@ -175,9 +204,7 @@ print(f"Saved layer statistics to: {stats_csv_path}")
 # =========================
 # save raw csv
 # =========================
-from pathlib import Path
-model_name = Path(sys.argv[1]).stem
-raw_csv_path = model_name + "-dist_layer_memory_loss_raw.csv"
+raw_csv_path = model_name + ".dist_layer_memory_loss_raw.csv"
 with open(raw_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
