@@ -98,7 +98,7 @@ dist_layer_losses = defaultdict(list)
 
 # raw records for csv
 raw_records = []
-D_list = [64, 256, 512, 1024, 2048] # distance from end
+D_list = [2048, 4096, 6144, 8296, 10240, 12288, 14336, 16384 , 18432, 20480, 22528, 24576]
 garbage = "The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again."
 garbage_tokens = tokenizer.encode(garbage) # 24 tokens
 prefix_tokens = garbage_tokens * 5 # 120 tokens
@@ -134,8 +134,8 @@ for passkey_tokens in tqdm(all_passkey_tokens):
             correct_count[D] += 1
 
 D2acc = {}
-for D in correct_count:
-    cnt = correct_count[D]
+for D in D_list:  
+    cnt = correct_count.get(D, 0)
     acc = cnt / len(all_passkey_tokens)
     D2acc[D] = acc
     print(f"Distance {D} | Accuracy: {acc:.4f}")
@@ -146,7 +146,7 @@ with open(dist_acc_csv_path, "w", newline="", encoding="utf-8") as f:
         fieldnames=["distance", "accuracy"]
     )
     writer.writeheader()
-    for D in sorted(D2acc.keys()):
+    for D in sorted(D_list):  
         writer.writerow({
             "distance": D,
             "accuracy": D2acc[D]
