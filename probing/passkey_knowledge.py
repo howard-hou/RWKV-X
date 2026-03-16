@@ -167,7 +167,7 @@ for D in correct_count:
     acc = cnt / len(all_passkey_tokens)
     D2acc[D] = acc
     print(f"Distance {D} | Accuracy: {acc:.4f}")
-dist_acc_csv_path = model_name + ".dist_accuracy.csv"
+dist_acc_csv_path = model_name + ".dist_accuracy_knowledge.csv"
 with open(dist_acc_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
@@ -217,7 +217,7 @@ for (D, layer_idx) in sorted(dist_layer_losses.keys()):
 # =========================
 # save stats csv
 # =========================
-stats_csv_path = model_name + ".dist_layer_memory_loss_stats.csv"
+stats_csv_path = model_name + ".dist_layer_memory_loss_stats_knowledge.csv"
 with open(stats_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
@@ -232,7 +232,7 @@ print(f"Saved layer statistics to: {stats_csv_path}")
 # =========================
 # save raw csv
 # =========================
-raw_csv_path = model_name + ".dist_layer_memory_loss_raw.csv"
+raw_csv_path = model_name + ".dist_layer_memory_loss_raw_knowledge.csv"
 with open(raw_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
