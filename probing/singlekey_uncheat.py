@@ -159,7 +159,7 @@ print(f"Total merged samples: {num_merged_docs}")
 if num_merged_docs > 500: # select 500 samples to speed up
     step = num_merged_docs // 500
     select_idx = [i for i in range(0, num_merged_docs, step)] # select 500 samples to speed up
-    docs = [merged_docs[i] for i in select_idx]
+    docs = [merged_docs[i] for i in select_idx][:500]
 else:
     docs = merged_docs
 print(f"Selected {len(docs)} samples for probing.")
@@ -205,8 +205,8 @@ for sample_id, line in enumerate(tqdm(docs)):
             correct_count[D] += 1
 
 D2acc = {}
-for D in correct_count:
-    cnt = correct_count[D]
+for D in D_list:
+    cnt = correct_count[D] if D in correct_count else 0
     acc = cnt / len(docs)
     D2acc[D] = acc
     print(f"Distance {D} | Accuracy: {acc:.4f}")
