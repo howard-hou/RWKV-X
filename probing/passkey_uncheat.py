@@ -83,25 +83,95 @@ def compute_stats(values):
         "median": x.median().item(),
     }
 
+def merge_docs_until_exceed_max_tokens(lines, tokenizer, max_D, sep="\n\n"):
+    """
+    Greedily merge consecutive documents until tokenized length > max_D.
 
+    Rules:
+    1. If a single document already has token length > max_D, keep it as is.
+    2. If a single document has token length <= max_D, keep merging the next
+       document(s) until the merged token length > max_D.
+    3. Process documents sequentially without overlap.
+
+    Args:
+        lines (list[str]): each element is an original document
+        tokenizer: HuggingFace tokenizer or compatible tokenizer
+        max_D (int): token-length threshold
+        sep (str): separator between merged documents
+
+    Returns:
+        merged_docs (list[str]): merged document texts
+        merged_indices (list[list[int]]): original indices used in each merged doc
+        merged_token_lens (list[int]): token lengths of merged docs
+    """
+    def token_len(text):
+        return len(tokenizer.encode(text))
+
+    merged_docs = []
+    merged_indices = []
+    merged_token_lens = []
+
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        cur_text = lines[i]
+        cur_indices = [i]
+        cur_len = token_len(cur_text)
+
+        # single document already exceeds max_D, keep it as is
+        if cur_len > max_D:
+            merged_docs.append(cur_text)
+            merged_indices.append(cur_indices)
+            merged_token_lens.append(cur_len)
+            i += 1
+            continue
+
+        # greedily merge next documents until exceeding max_D
+        j = i + 1
+        while j < n and cur_len <= max_D:
+            cur_text = cur_text + sep + lines[j]
+            cur_indices.append(j)
+            cur_len = token_len(cur_text)
+            j += 1
+
+        # 
+        if cur_len >= max_D:
+            merged_docs.append(cur_text)
+            merged_indices.append(cur_indices)
+            merged_token_lens.append(cur_len)
+
+        i = j
+
+    return merged_docs, merged_indices, merged_token_lens
 # =========================
 # load dataset
 # =========================
+D_list = [64, 256, 512, 1024, 2048] # distance from end
+max_D = max(D_list)
 from datasets import load_dataset
 ds = load_dataset("Jellyfish042/UncheatableEval-2026-01")['test']
-select_idx = [i for i in range(0, len(ds), 15)] # select 500 samples to speed up
-lines = [line['content'] for i, line in enumerate(ds) if i in select_idx]
-
+lines = [line['content'] for line in ds]
+merged_docs, merged_indices, merged_token_lens = merge_docs_until_exceed_max_tokens(lines, tokenizer, max_D)
+num_merged_docs = len(merged_docs)
+print(f"Total original samples: {len(lines)}")
+print(f"Total merged samples: {num_merged_docs}")
+if num_merged_docs > 500: # select 500 samples to speed up
+    step = num_merged_docs // 500
+    select_idx = [i for i in range(0, num_merged_docs, step)] # select 500 samples to speed up
+    docs = [merged_docs[i] for i in select_idx]
+else:
+    docs = merged_docs
+print(f"Selected {len(docs)} samples for probing.")
 # (dist, layer) -> list of losses
 dist_layer_losses = defaultdict(list)
 
 # raw records for csv
 raw_records = []
-D_list = [64, 256, 512, 1024, 2048] # distance from end
 task = "There is an important info hidden inside a lot of irrelevant text. Find it and memorize them. I will quiz you about the important information there."
 task_tokens = tokenizer.encode(task)
 correct_count = defaultdict(int)
-for sample_id, line in enumerate(tqdm(lines)):
+for sample_id, line in enumerate(tqdm(docs)):
     content = line
     content_tokens = tokenizer.encode(content)
     for D in D_list:
@@ -137,7 +207,7 @@ for sample_id, line in enumerate(tqdm(lines)):
 D2acc = {}
 for D in correct_count:
     cnt = correct_count[D]
-    acc = cnt / len(lines)
+    acc = cnt / len(docs)
     D2acc[D] = acc
     print(f"Distance {D} | Accuracy: {acc:.4f}")
 dist_acc_csv_path = model_name + ".dist_accuracy_uncheat.csv"
