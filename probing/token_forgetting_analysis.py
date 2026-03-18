@@ -157,7 +157,7 @@ with open(csv_path, "w", newline='') as csvfile:
         row = {
             "token": token,
             "accuracy": record["accuracy"],
-            "memory_loss": record["mean_loss"],
+            "memory_loss": round(record["mean_loss"], 3),
             "max_retrain_lag": record["max_retrain_lag"],
         }
         writer.writerow(row)
