@@ -196,8 +196,23 @@ class RWKV_x070(MyModule):
             RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd)
             for i in range(self.n_layer)
         ])
-        torch.cuda.empty_cache()
 
+    @torch.inference_mode()
+    def forward(self, idx, state, full_output=False):
+        if state == None:
+            state = [None for _ in range(self.args.n_layer * 3)]
+            for i in range(self.args.n_layer): # state: 0=att_x_prev 1=att_kv 2=ffn_x_prev
+                state[i*3+0] = torch.zeros(self.args.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
+                state[i*3+1] = torch.zeros((self.args.n_embd // self.args.head_size, self.args.head_size, self.args.head_size), dtype=torch.float, requires_grad=False, device=DEVICE)
+                state[i*3+2] = torch.zeros(self.args.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
+
+        if type(idx) is list:
+            if len(idx) > 1:
+                return self.forward_seq(idx, state, full_output)
+            else:
+                return self.forward_one(idx[0], state)
+        else:
+            return self.forward_one(idx, state)
 
     @torch.inference_mode()
     def forward_one(self, idx: int, state: List[torch.Tensor]):
@@ -206,11 +221,11 @@ class RWKV_x070(MyModule):
         v_first = torch.empty_like(x)
 
         for block in self.blocks:
-            x, state, v_first, k, v = block.forward_one(x, state, v_first)
+            x, state, v_first = block.forward_one(x, state, v_first)
 
         x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
-        return x, state, k, v
+        return x, state
 
     @torch.inference_mode()
     def forward_seq(self, idx: List[int], state: List[torch.Tensor], full_output: bool = False):
@@ -219,14 +234,15 @@ class RWKV_x070(MyModule):
         v_first = torch.empty_like(x)
 
         for block in self.blocks:
-            x, state, v_first, k, v = block.forward_seq(x, state, v_first)
+            x, state, v_first = block.forward_seq(x, state, v_first)
 
         if not full_output:
             x = x[-1]
 
         x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
-        return x, state, k, v
+        return x, state
+
         
 
 class RWKVBlock(nn.Module):
