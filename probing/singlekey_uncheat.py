@@ -5,10 +5,7 @@ measure the memory loss of a single token at each layer, and how it changes with
 '''
 # !!! set these before import RWKV !!!
 from collections import defaultdict
-from operator import gt, is_
 import os
-from statistics import mean
-import token
 os.environ["RWKV_CUDA_ON"] = '1'  # '1' to compile CUDA kernel (10x faster), requires c++ compiler & cuda libraries
 
 import sys
@@ -121,6 +118,7 @@ raw_records = []
 task = "There is an important info hidden inside a lot of irrelevant text. Find it and memorize them. I will quiz you about the important information there."
 task_tokens = tokenizer.encode(task)
 correct_count = defaultdict(int)
+loss_vs_binary = [] # (loss, is_correct)
 for D in tqdm(D_list):
     docs = d2docs[D]
     for sample_id, line in enumerate(docs):
@@ -131,7 +129,8 @@ for D in tqdm(D_list):
         # insert value token at position (T-D)
         tokens = task_tokens + prefix_tokens + passkey_tokens + suffix_tokens
         p = len(task_tokens) + len(prefix_tokens) + 4 # position of the value token
-        out, state, k_list, v_list = model.forward(tokens, None)
+        with torch.inference_mode():
+            out, state, k_list, v_list = model.forward(tokens, None)
         # num of layers [L]
         layer_memory_loss = calculate_layer_memory_loss(state, k_list, v_list, p)
 
@@ -144,16 +143,21 @@ for D in tqdm(D_list):
                 "distance": D,
                 "memory_loss": loss_val,
             })
+        mean_loss = layer_memory_loss.mean().item()
         # QA test
         final_question = "What is the pass key? The pass key is"
         question_tokens = tokenizer.encode(final_question)
-        logits, state, _, _ = model(question_tokens, state)
+        with torch.inference_mode():
+            logits, state, _, _ = model(question_tokens, state)
         pred_token = torch.argmax(logits).item()
         gt_token = passkey_tokens[-1]
         is_correct = (pred_token == gt_token)
         # print(gt_token, pred_token, is_correct)
         if is_correct:
             correct_count[D] += 1
+            loss_vs_binary.append((mean_loss, 1))
+        else:
+            loss_vs_binary.append((mean_loss, 0))
 
 D2acc = {}
 for D in D_list:
@@ -235,3 +239,29 @@ with open(raw_csv_path, "w", newline="", encoding="utf-8") as f:
     writer.writerows(raw_records)
 
 print(f"Saved raw per-sample per-layer losses to: {raw_csv_path}")
+
+# =========================
+# save loss vs binary csv
+# =========================
+loss_binary_csv_path = model_name + ".loss_vs_binary_uncheat.csv"
+with open(loss_binary_csv_path, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(
+        f,
+        fieldnames=["mean_loss", "is_correct"]
+    )
+    writer.writeheader()
+    for mean_loss, is_correct in loss_vs_binary:
+        writer.writerow({
+            "mean_loss": mean_loss,
+            "is_correct": is_correct
+        })
+print(f"Saved loss vs binary statistics to: {loss_binary_csv_path}")
+# plot loss vs binary, x is loss, y is binary
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.violinplot(x=[ x for x, y in loss_vs_binary ], y=[ y for x, y in loss_vs_binary ])
+plt.title("Memory Loss vs QA Accuracy")
+plt.xlabel("Mean Memory Loss")
+plt.ylabel("QA Accuracy (0 or 1)")
+plt.savefig(model_name + ".loss_vs_binary_uncheat.png")
+print(f"Saved loss vs binary plot to: {model_name + '.loss_vs_binary_uncheat.png'}")

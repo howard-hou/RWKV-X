@@ -27,7 +27,7 @@ from pathlib import Path
 model_name = Path(sys.argv[1]).stem
 
 information_line = f"The pass key is"
-information_tokens = tokenizer.encode(information_line) # 5 tokens
+information_tokens = tokenizer.encode(information_line) #
 all_passkey_tokens = []
 for idx in VALUE_TOKEN_LIST:
     passkey_tokens = information_tokens + [idx]
