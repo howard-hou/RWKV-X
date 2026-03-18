@@ -7,12 +7,14 @@ measure the memory loss of a single token at each layer, and how it changes with
 from collections import defaultdict
 from operator import gt, is_
 import os
+from statistics import mean
 import token
 os.environ["RWKV_CUDA_ON"] = '1'  # '1' to compile CUDA kernel (10x faster), requires c++ compiler & cuda libraries
 
 import sys
 from tqdm import tqdm
 import torch
+import numpy as np
 import csv
 from rwkv_x.model_exp import RWKV_EXP
 from rwkv_x.utils import PIPELINE
@@ -156,7 +158,7 @@ for D in tqdm(D_list):
 D2acc = {}
 for D in D_list:
     cnt = correct_count[D] if D in correct_count else 0
-    acc = cnt / len(docs)
+    acc = cnt / len(d2docs[D])
     D2acc[D] = acc
     print(f"Distance {D} | Accuracy: {acc:.4f}")
 dist_acc_csv_path = model_name + ".dist_accuracy_uncheat.csv"
@@ -197,11 +199,12 @@ for (D, layer_idx) in sorted(dist_layer_losses.keys()):
 
 print("\n" + "=" * 80)
 for D in D_list:
-    # max loss layer index
-    max_layer_index = max(all_layer_means[D].keys(), key=lambda idx: all_layer_means[D][idx])
-    max_layer = all_layer_means[D][max_layer_index]
+    # # max loss layer index
+    # max_layer_index = max(all_layer_means[D].keys(), key=lambda idx: all_layer_means[D][idx])
+    # max_layer = all_layer_means[D][max_layer_index]
+    mean_loss = np.mean([ all_layer_means[D][idx] for idx in all_layer_means[D] ])
     acc = D2acc[D]
-    print(f"Distance {D} | Max Memory Loss: {max_layer:.6f} | Accuracy: {acc:.4f}")
+    print(f"Distance {D} | Mean Memory Loss: {mean_loss:.6f} | Accuracy: {acc:.4f}")
 print("=" * 80)
 
 # =========================
