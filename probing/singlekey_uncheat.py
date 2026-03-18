@@ -160,7 +160,7 @@ for D in D_list:
     cnt = correct_count[D] if D in correct_count else 0
     acc = cnt / len(d2docs[D])
     D2acc[D] = acc
-    print(f"Distance {D} | Accuracy: {acc:.4f}")
+    print(f"Token Lag {D} | Accuracy: {acc:.4f}")
 dist_acc_csv_path = model_name + ".dist_accuracy_uncheat.csv"
 with open(dist_acc_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
@@ -204,7 +204,7 @@ for D in D_list:
     # max_layer = all_layer_means[D][max_layer_index]
     mean_loss = np.mean([ all_layer_means[D][idx] for idx in all_layer_means[D] ])
     acc = D2acc[D]
-    print(f"Distance {D} | Mean Memory Loss: {mean_loss:.6f} | Accuracy: {acc:.4f}")
+    print(f"Token Lag {D} | Mean Memory Loss: {mean_loss:.6f} | Accuracy: {acc:.4f}")
 print("=" * 80)
 
 # =========================
