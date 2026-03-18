@@ -12,6 +12,7 @@ os.environ["RWKV_CUDA_ON"] = '1'  # '1' to compile CUDA kernel (10x faster), req
 import sys
 from tqdm import tqdm
 import torch
+import numpy as np
 import csv
 from rwkv_x.model_exp import RWKV_EXP
 from rwkv_x.utils import PIPELINE
@@ -90,9 +91,6 @@ def compute_stats(values):
 # =========================
 # load dataset
 # =========================
-from datasets import load_dataset
-ds = load_dataset("Jellyfish042/UncheatableEval-2026-01")['test']
-
 # (dist, layer) -> list of losses
 dist_layer_losses = defaultdict(list)
 
@@ -138,7 +136,7 @@ for D in D_list:
     cnt = correct_count.get(D, 0)
     acc = cnt / len(all_passkey_tokens)
     D2acc[D] = acc
-    print(f"Distance {D} | Accuracy: {acc:.4f}")
+    print(f"Token Lag {D} | Accuracy: {acc:.4f}")
 dist_acc_csv_path = model_name + ".dist_accuracy.csv"
 with open(dist_acc_csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
@@ -179,12 +177,12 @@ for (D, layer_idx) in sorted(dist_layer_losses.keys()):
     }
     stats_records.append(record)
 
-# print("\n" + "=" * 80)
-# for D in D_list:
-#     last_layer_index = max(all_layer_means[D].keys())
-#     last_layer = all_layer_means[D][last_layer_index]
-#     print(f"Distance {D} | Last Layer Memory Loss: {last_layer:.6f}")
-# print("=" * 80)
+print("\n" + "=" * 80)
+for D in D_list:
+    mean_loss = np.mean([ all_layer_means[D][idx] for idx in all_layer_means[D] ])
+    acc = D2acc[D]
+    print(f"Token Lag {D} | Mean Memory Loss: {mean_loss:.6f} | Accuracy: {acc:.4f}")
+print("=" * 80)
 
 # =========================
 # save stats csv
