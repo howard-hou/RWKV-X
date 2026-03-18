@@ -108,7 +108,7 @@ if os.environ.get('RWKV_CUDA_ON') == '1':
 
         xx = torch.nn.functional.group_norm(xx.view(T,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(T,H*N)
         xx = xx + ((r * k * r_k).view(T,H,N).sum(dim=-1, keepdim=True) * v.view(T,H,N)).view(T,H*N)
-        return (xx * g) @ O_, x[-1,:], state, v_first
+        return (xx * g) @ O_, x[-1,:], state, v_first, k, v
 else:
     @MyStatic
     def RWKV_x070_TMix_seq(layer_id: int, H:int, N:int, x, x_prev, v_first, state, x_r, x_w, x_k, x_v, x_a, x_g, w0, w1, w2, a0, a1, a2, v0, v1, v2, g1, g2, k_k, k_a, r_k, R_, K_, V_, O_, ln_w, ln_b):
@@ -138,7 +138,7 @@ else:
 
         xx = torch.nn.functional.group_norm(xx.view(T,H*N), num_groups=H, weight=ln_w, bias=ln_b, eps = 64e-5).view(T,H*N)
         xx = xx + ((r * k * r_k).view(T,H,N).sum(dim=-1, keepdim=True) * v.view(T,H,N)).view(T,H*N)
-        return (xx * g) @ O_, x[-1,:], state, v_first
+        return (xx * g) @ O_, x[-1,:], state, v_first, k, v
 
 
 
@@ -238,13 +238,25 @@ class RWKVBlock(nn.Module):
         self.head_size = head_size
         self.n_embd = n_embd
 
+    def calculate_layer_memory_loss(self, state, k, v):
+        # restore v from state and k
+        # wkv_state: [H, K, V]
+        # k:         [T, H, K]
+        # output:    [T]
+        wkv_state = state[self.layer_id * 3 + 1].float()   # [H, K, V], e.g. [16, 64, 64]
+        k = k.view(-1, self.n_head, self.head_size).float()   # [T, H, K]
+        v = v.view(-1, self.n_head, self.head_size).float()   # [T, H, V]
+        v_restore = torch.einsum('hkv,thk->thv', wkv_state, k)
+        layer_memory_loss = ((v - v_restore) ** 2).mean(dim=-1).mean(dim=-1)   # [T]
+        return layer_memory_loss
+
     def forward_one(self, x, state, v_first):
         i = self.layer_id
         z = self.z
         bbb, att, ffn = f'blocks.{i}.', f'blocks.{i}.att.', f'blocks.{i}.ffn.'
 
         xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
-        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+        xx, state[i*3+0], state[i*3+1], v_first, k, v = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
             z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
             z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
             z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
@@ -256,7 +268,10 @@ class RWKVBlock(nn.Module):
         xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
         x = x + xx
 
-        return x, state, v_first
+        layer_memory_loss = self.calculate_layer_memory_loss(state, k, v)
+        forget_idx = torch.topk(layer_memory_loss, k=5, largest=True).indices
+
+        return x, state, v_first, forget_idx
 
     def forward_seq(self, x, state, v_first):
         i = self.layer_id
@@ -265,7 +280,7 @@ class RWKVBlock(nn.Module):
 
         xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
 
-        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+        xx, state[i*3+0], state[i*3+1], v_first, k, v = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
             z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
             z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
             z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
@@ -277,7 +292,7 @@ class RWKVBlock(nn.Module):
         xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
         x = x + xx
 
-        return x, state, v_first
+        return x, state, v_first, k, v
 
 
 ################################## Sparse Attention ##############################################
@@ -303,44 +318,6 @@ class CausalSparseAttention(nn.Module):
         self.min_kv_cache_size = config.min_kv_cache_size # minimum kv cache size
         self.prefill_attn_mode = config.prefill_attn_mode # attention mode for prefill
         self.decoding_attn_mode = config.decoding_attn_mode # attention mode for decoding
-
-    def update_kv_cache(self, q, k, v):
-        '''
-        input: q, k, v: (B, QT, C), (B, KT, C)
-        output: k_past_compress, v_past_compress: (B, min_kv_cache_size, C)
-        '''
-        B, QT, C = q.size()
-        KT, VT = k.size(1), v.size(1)
-        assert KT == VT, "key and value must have the same length"
-        # check if the cache size is larger than the minimum size
-        if self.min_kv_cache_size >= KT:
-            return k, v
-        # split k, v into past and current
-        past_KT = KT - self.kv_cache_window_size
-        k_past, k_cur = k[:, :past_KT, :], k[:, past_KT: :]
-        v_past, v_cur = v[:, :past_KT, :], v[:, past_KT:, :]
-        q = q.view(B, QT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, QT, hs)
-        k_past = k_past.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, past_KT, hs)
-        v_past = v_past.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, past_KT, hs)
-        # calculate attention weights
-        B, NH, QT, HS = q.size()
-        attn_weights = torch.matmul(q, k_past.transpose(2, 3)) / math.sqrt(HS) # (B, NH, QT, past_KT)
-        attn_weights = F.softmax(attn_weights, dim=-1) # (B, NH, QT, past_KT)
-        vote = attn_weights.sum(dim=-2) # (B, NH, past_KT) Sum the weight along the query dimension
-        assert self.min_kv_cache_size - self.kv_cache_window_size > 0
-        keep_KT = min(self.min_kv_cache_size - self.kv_cache_window_size, past_KT)
-        indices = vote.topk(keep_KT, dim=-1).indices
-        # Expand the indices to match the head dimension for gathering
-        indices = indices.unsqueeze(-1).expand(-1, -1, -1, HS)
-        k_past_compress = torch.gather(k_past, 2, indices)
-        v_past_compress = torch.gather(v_past, 2, indices)
-        # Reshape back to (B, KT, C)
-        k_past_compress = k_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, keep_KT, C)
-        v_past_compress = v_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, keep_KT, C)
-        # 
-        k_cache = torch.cat([k_past_compress, k_cur], dim=1) # (B, keep_KT, C)
-        v_cache = torch.cat([v_past_compress, v_cur], dim=1)
-        return k_cache, v_cache
 
     def forward_one(self, x, k_cache, v_cache):
         ''' used for decode, only one token at a time
@@ -410,63 +387,23 @@ class CausalSparseAttention(nn.Module):
         if len(x.shape) == 2:
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
-        # manage k, v cache
-        if self.enable_kv_cache_management and k_cache.size(1) > self.max_kv_cache_size:
-            k_cache, v_cache = self.update_kv_cache(x, k_cache, v_cache)
         CT = k_cache.size(1) # cache seq length
         # apply the attention
-        if (T+CT) <= self.short_sequence_criteria or self.prefill_attn_mode == 'full': # for short sequence, use full attention
-            q, k, v = self.receptance(x), self.key(x), self.value(x)
-            # prefix mask
-            causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
-            cache_mask = torch.ones((T, CT), dtype=torch.bool, device=x.device)
-            prefix_mask = torch.cat((cache_mask, causal_mask), dim=1)
-            k_cache = torch.cat((k_cache, k), dim=1) # update k cache
-            v_cache = torch.cat((v_cache, v), dim=1) # update v cache
-            q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-            k_comb = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-            v_comb = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-            y = F.scaled_dot_product_attention(q, k_comb, v_comb, attn_mask=prefix_mask)
-            y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-            # output projection
-            y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
-            return y, k_cache, v_cache
-        else: # chunked attention ignoring the kv cache
-            # pad on right side to match the chunk size
-            pad_size = self.attn_chunk_size - (T % self.attn_chunk_size)
-            if pad_size != self.attn_chunk_size:
-                zero_pad = torch.zeros((B, pad_size, C), dtype=x.dtype, device=x.device)
-                x = torch.cat((x, zero_pad), dim=1)
-                T = x.size(1) # update T after padding
-            # fold x into chunks, merge with batch size dim
-            num_chunks = T // self.attn_chunk_size
-            x = x.view(B * num_chunks, self.attn_chunk_size, C)
-            new_B, new_T, C = x.size()
-            q, k, v = self.receptance(x), self.key(x), self.value(x)
-            k = k.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)        
-            q = q.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-            v = v.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # here we use causal attention in chunk
-            y = y.transpose(1, 2).contiguous().view(new_B, new_T, C) # re-assemble all head outputs side by side
-            k = k.transpose(1, 2).contiguous().view(new_B, new_T, C)
-            v = v.transpose(1, 2).contiguous().view(new_B, new_T, C)
-            # output projection
-            y = self.output(y)
-            # unfold y, k, v into original shape
-            y = y.view(B, num_chunks*self.attn_chunk_size, C)
-            k = k.view(B, num_chunks*self.attn_chunk_size, C)
-            v = v.view(B, num_chunks*self.attn_chunk_size, C)
-            # remove padding
-            if pad_size != self.attn_chunk_size:
-                y = y[:, :-pad_size, :]
-                k = k[:, :-pad_size, :]
-                v = v[:, :-pad_size, :]
-            # remove extra dimension
-            y = y.squeeze(0)
-            # update k, v cache
-            k_cache = torch.cat((k_cache, k), dim=1)
-            v_cache = torch.cat((v_cache, v), dim=1)
-            return y, k_cache, v_cache
+        q, k, v = self.receptance(x), self.key(x), self.value(x)
+        # prefix mask
+        causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
+        cache_mask = torch.ones((T, CT), dtype=torch.bool, device=x.device)
+        prefix_mask = torch.cat((cache_mask, causal_mask), dim=1)
+        k_cache = torch.cat((k_cache, k), dim=1) # update k cache
+        v_cache = torch.cat((v_cache, v), dim=1) # update v cache
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k_comb = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
+        v_comb = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
+        y = F.scaled_dot_product_attention(q, k_comb, v_comb, attn_mask=prefix_mask)
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection
+        y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
+        return y, k_cache, v_cache
 
 
 ########################################################################################################
@@ -654,10 +591,10 @@ class RWKV_X(nn.Module):
         rwkv_id, attn_id = 0, 0
         for block in self.get_block_exe_order():
             if isinstance(block, RWKVBlock):
-                x, state['rwkv'], v_first = block.forward_seq(x, state['rwkv'], v_first)
+                x, state['rwkv'], v_first, forget_idx = block.forward_seq(x, state['rwkv'], v_first)
                 rwkv_id += 1
             else:
-                x, state['attn'][attn_id] = block.forward_seq(x, state['attn'][attn_id])
+                x, state['attn'][attn_id] = block.forward_seq(x, state['attn'][attn_id], forget_idx)
                 attn_id += 1
 
         if not full_output:
