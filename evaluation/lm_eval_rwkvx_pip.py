@@ -93,7 +93,7 @@ if args.task_group != 'disable':
     elif args.task_group == 'ruler_single':
         eval_tasks += RULER_SINGLE_TASK_GROUP
     elif args.task_group == 'ruler_multikey':
-        eval_tasks += RULER_MULTIKEY_TASK_GROUP
+        eval_tasks += RULER_MULTI_TASK_GROUP
     elif args.task_group == 'longbench':
         eval_tasks += LONGBENCH_TASK_GROUP
     else:
