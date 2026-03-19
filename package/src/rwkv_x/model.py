@@ -291,7 +291,9 @@ class RWKVBlock(nn.Module):
 
         
         layer_memory_loss = self.calculate_layer_memory_loss(state, k, v)
-        memory_keep_idx = torch.topk(layer_memory_loss, k=64, largest=True).indices
+        T = layer_memory_loss.size(0)
+        k = 64 if T > 64 else T
+        memory_keep_idx = torch.topk(layer_memory_loss, k=k, largest=True).indices
 
         return x, state, v_first, memory_keep_idx
 
@@ -525,8 +527,8 @@ class RWKV_X(nn.Module):
             else:
                 x, state['attn'][attn_id] = block.prefill(x, state['attn'][attn_id])
                 # select memory here
-                state['attn'][attn_id]['k_cache'] = state['attn'][attn_id]['k_cache'].select(1, memory_keep_idx)
-                state['attn'][attn_id]['v_cache'] = state['attn'][attn_id]['v_cache'].select(1, memory_keep_idx)
+                state['attn'][attn_id]['k_cache'] = state['attn'][attn_id]['k_cache'].index_select(1, memory_keep_idx)
+                state['attn'][attn_id]['v_cache'] = state['attn'][attn_id]['v_cache'].index_select(1, memory_keep_idx)
                 attn_id += 1
 
         if not full_output:
