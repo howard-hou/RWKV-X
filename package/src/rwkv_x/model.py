@@ -250,13 +250,13 @@ class RWKVBlock(nn.Module):
         layer_memory_loss = ((v - v_restore) ** 2).mean(dim=-1).mean(dim=-1)   # [T]
         return layer_memory_loss
 
-    def forward_one(self, x, state, v_first):
+    def decode(self, x, state, v_first):
         i = self.layer_id
         z = self.z
         bbb, att, ffn = f'blocks.{i}.', f'blocks.{i}.att.', f'blocks.{i}.ffn.'
 
         xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
-        xx, state[i*3+0], state[i*3+1], v_first, k, v = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
             z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
             z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
             z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
@@ -268,12 +268,9 @@ class RWKVBlock(nn.Module):
         xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
         x = x + xx
 
-        layer_memory_loss = self.calculate_layer_memory_loss(state, k, v)
-        forget_idx = torch.topk(layer_memory_loss, k=5, largest=True).indices
+        return x, state, v_first
 
-        return x, state, v_first, forget_idx
-
-    def forward_seq(self, x, state, v_first):
+    def prefill(self, x, state, v_first):
         i = self.layer_id
         z = self.z
         bbb, att, ffn = f'blocks.{i}.', f'blocks.{i}.att.', f'blocks.{i}.ffn.'
@@ -292,11 +289,15 @@ class RWKVBlock(nn.Module):
         xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
         x = x + xx
 
-        return x, state, v_first, k, v
+        
+        layer_memory_loss = self.calculate_layer_memory_loss(state, k, v)
+        memory_keep_idx = torch.topk(layer_memory_loss, k=64, largest=True).indices
+
+        return x, state, v_first, memory_keep_idx
 
 
-################################## Sparse Attention ##############################################
-class CausalSparseAttention(nn.Module):
+################################## Memory Attention ##############################################
+class MemoryAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
@@ -308,99 +309,47 @@ class CausalSparseAttention(nn.Module):
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        self.attn_chunk_size = config.attn_chunk_size
-        self.attn_topk = config.attn_topk
-        self.short_sequence_criteria = config.short_sequence_criteria
-        # kv cache management
-        self.enable_kv_cache_management = config.enable_kv_cache_management # whether to enable kv cache management
-        self.max_kv_cache_size = config.max_kv_cache_size # condition that trigger the cache management
-        self.kv_cache_window_size = config.kv_cache_window_size # observation window size
-        self.min_kv_cache_size = config.min_kv_cache_size # minimum kv cache size
-        self.prefill_attn_mode = config.prefill_attn_mode # attention mode for prefill
-        self.decoding_attn_mode = config.decoding_attn_mode # attention mode for decoding
 
-    def forward_one(self, x, k_cache, v_cache):
+    def decode(self, x, k_mem, v_mem):
         ''' used for decode, only one token at a time
-        input: x: (C) and k, v cache (1, CT, C)
-        output: y: (C) and k, v cache (1, CT+1, C)
+        input: x: (C) and k, v mem (1, M, C)
+        output: y: (C)
         '''
         if len(x.shape) == 1:
             x = x.unsqueeze(0).unsqueeze(0) # (C) -> (1, 1, C)
         assert x.size(0) == 1, "batch size must be 1"
         assert x.size(1) == 1, "sequence length must be 1"
         C = x.size(-1)
-        q, k, v = self.receptance(x), self.key(x), self.value(x)
-        # manage k, v cache
-        if self.enable_kv_cache_management and k_cache.size(1) > self.max_kv_cache_size:
-            k_cache, v_cache = self.update_kv_cache(q, k_cache, v_cache)
-        CT = k_cache.size(1)
-        # apply the attention, only decoding consider the full attention mode
-        if CT <= self.short_sequence_criteria or self.decoding_attn_mode == 'full': # for short sequence, use full attention
-            k_cache = torch.cat((k_cache, k), dim=1) # update k cache
-            v_cache = torch.cat((v_cache, v), dim=1) # update v cache
-            q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, nh, 1, hs)
-            k_comb = k_cache.view(1, CT+1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, CT+1, hs)
-            v_comb = v_cache.view(1, CT+1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, CT+1, hs)
-            # !!! super be careful here, the attention is not causal !!!
-            # is_causal=True -> torch.ones(L, S, dtype=torch.bool).tril(diagonal=0) -> [1， S] -> [1, 0, 0, 0, ...]
-            y = F.scaled_dot_product_attention(q, k_comb, v_comb)
-            y = y.transpose(1, 2).contiguous().view(C) # (1, nh, 1, hs) -> (1, 1, nh, hs) -> (C)
-            y = self.output(y)
-            return y, k_cache, v_cache
-        else:
-            reminder = CT % self.attn_chunk_size
-            k_chunk, k_reminder = k_cache[:, :CT-reminder, :], k_cache[:, CT-reminder:, :]
-            v_chunk, v_reminder = v_cache[:, :CT-reminder, :], v_cache[:, CT-reminder:, :]
-            # split k, v into chunks
-            num_chunks = k_chunk.size(1) // self.attn_chunk_size
-            k_chunk = k_chunk.view(1, num_chunks, self.attn_chunk_size, C)
-            v_chunk = v_chunk.view(1, num_chunks, self.attn_chunk_size, C)
-            # get chunk key
-            chunk_key = k_chunk.mean(dim=2) # (1, num_chunks, C)
-            # get top-k chunk
-            chunk_score = torch.einsum('bqc,bkc->bqk', q, chunk_key) # (1, 1, num_chunks)
-            topk_chunk_indices = torch.topk(chunk_score, self.attn_topk, dim=-1).indices.squeeze() # (attn_topk)
-            # get top-k chunk key and value
-            topk_k = k_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, attn_topk * attn_chunk_size, C)
-            topk_v = v_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, attn_topk * attn_chunk_size, C)
-            # combine with reminder and current k, v
-            k_comb = torch.cat((topk_k, k_reminder, k), dim=1)
-            v_comb = torch.cat((topk_v, v_reminder, v), dim=1)
-            # calculate attention and output
-            new_T = k_comb.size(1)
-            q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2)
-            k_comb = k_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
-            v_comb = v_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
-            # !!! super be careful, the attention here can not be causal !!!
-            y = F.scaled_dot_product_attention(q, k_comb, v_comb)
-            y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
-            y = self.output(y)
-            k_cache = torch.cat((k_cache, k), dim=1)
-            v_cache = torch.cat((v_cache, v), dim=1)
-            return y, k_cache, v_cache
+        q = self.receptance(x)
+        q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, nh, 1, hs)
+        k_mem = k_mem.view(1, -1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, M, hs)
+        v_mem = v_mem.view(1, -1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, M, hs)
+        # !!! super be careful here, the attention is not causal !!!
+        # is_causal=True -> torch.ones(L, S, dtype=torch.bool).tril(diagonal=0) -> [1， S] -> [1, 0, 0, 0, ...]
+        y = F.scaled_dot_product_attention(q, k_mem, v_mem)
+        y = y.transpose(1, 2).contiguous().view(C) # (1, nh, 1, hs) -> (1, 1, nh, hs) -> (C)
+        y = self.output(y)
+        return y
 
-    def forward_seq(self, x, k_cache, v_cache):
+    def prefill(self, x):
         '''
-        input: x: (T, C) and k, v cache (1, CT, C)
-        output: y: (T, C) and k, v cache (1, CT+T, C)
+        input: x: (T, C)
+        output: y: (T, C) and k, v cache (1, T, C)
         '''
         if len(x.shape) == 2:
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
-        CT = k_cache.size(1) # cache seq length
         # apply the attention
         q, k, v = self.receptance(x), self.key(x), self.value(x)
         # prefix mask
         causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
-        cache_mask = torch.ones((T, CT), dtype=torch.bool, device=x.device)
-        prefix_mask = torch.cat((cache_mask, causal_mask), dim=1)
-        k_cache = torch.cat((k_cache, k), dim=1) # update k cache
-        v_cache = torch.cat((v_cache, v), dim=1) # update v cache
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        k_comb = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-        v_comb = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-        y = F.scaled_dot_product_attention(q, k_comb, v_comb, attn_mask=prefix_mask)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=causal_mask)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        k_cache = k.transpose(1, 2).contiguous().view(B, T, C) # (B, T, C)
+        v_cache = v.transpose(1, 2).contiguous().view(B, T, C) # (B, T, C)
         # output projection
         y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
         return y, k_cache, v_cache
@@ -430,28 +379,26 @@ class RWKV_CMix_x070(nn.Module):
         return self.value(k), x[-1,:]
     
 
-class SparseAttentionBlock(nn.Module):
+class MemoryAttentionBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln1 = nn.LayerNorm(config.n_embd)
         self.ln2 = nn.LayerNorm(config.n_embd)
-        self.att = CausalSparseAttention(config)
+        self.att = MemoryAttention(config)
         self.ffn = RWKV_CMix_x070(config.n_embd)
         
-    def forward_seq(self, x, state):
-        xx, state['k_cache'], state['v_cache'] = self.att.forward_seq(
-            self.ln1(x), state['k_cache'], state['v_cache']
-            )
+    def prefill(self, x, state):
+        xx, state['k_cache'], state['v_cache'] = self.att.prefill(self.ln1(x))
         x = x + xx
         xx, state['ffn_x_prev'] = self.ffn(self.ln2(x), state['ffn_x_prev'])
         x = x + xx
         return x, state
     
-    def forward_one(self, x, state):
+    def decode(self, x, state):
         '''
         x: (C)
         '''
-        xx, state['k_cache'], state['v_cache'] = self.att.forward_one(
+        xx = self.att.decode(
             self.ln1(x), state['k_cache'], state['v_cache']
             )
         x = x + xx
@@ -466,15 +413,6 @@ class RWKV_X_Config:
     n_head: int = 0
     n_embd: int = 0
     head_size: int = 64
-    attn_chunk_size: int = 2000
-    attn_topk: int = 3
-    short_sequence_criteria: int = 8000 # if sequence length <= this, use full attention
-    enable_kv_cache_management: bool = False # whether to enable kv cache management
-    max_kv_cache_size: int = 20000
-    kv_cache_window_size: int = 2000
-    min_kv_cache_size: int = 16000
-    prefill_attn_mode: str = 'chunk' # 'chunk' or 'full'
-    decoding_attn_mode: str = 'full' # 'full' or 'snapKV' or 'new'
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, config=None):
@@ -482,7 +420,7 @@ class RWKV_X(nn.Module):
         print(f'Loading {model_path} ({strategy})\n')
         rwkv_state_dict, attn_state_dict, config = self.load_from_ckpt(model_path, strategy, config)
         self.rwkv = RWKV_x070(rwkv_state_dict).to(device=DEVICE).to(DTYPE)
-        self.attn = nn.ModuleList([SparseAttentionBlock(config) for _ in range(config.n_attn_layer)])
+        self.attn = nn.ModuleList([MemoryAttentionBlock(config) for _ in range(config.n_attn_layer)])
         self.attn.to(device=DEVICE).to(DTYPE)
         self.attn.load_state_dict(attn_state_dict, strict=True)
         self.config = config
@@ -526,15 +464,6 @@ class RWKV_X(nn.Module):
                 n_attn_layer=n_attn_layer,
                 n_head=n_head,
                 n_embd=n_embd,
-                attn_chunk_size=config.attn_chunk_size,
-                attn_topk=config.attn_topk,
-                enable_kv_cache_management=config.enable_kv_cache_management,
-                max_kv_cache_size=config.max_kv_cache_size,
-                prefill_attn_mode=config.prefill_attn_mode,
-                decoding_attn_mode=config.decoding_attn_mode,
-                short_sequence_criteria=config.short_sequence_criteria,
-                kv_cache_window_size=config.kv_cache_window_size,
-                min_kv_cache_size=config.min_kv_cache_size,
                 head_size=config.head_size
             )
         return rwkv_state_dict, attn_state_dict, config
@@ -559,13 +488,13 @@ class RWKV_X(nn.Module):
 
         if type(idx) is list:
             if len(idx) > 1:
-                return self.forward_seq(idx, state, full_output)
+                return self.prefill(idx, state, full_output)
             else:
-                return self.forward_one(idx[0], state)
+                return self.decode(idx[0], state)
         else:
-            return self.forward_one(idx, state)
+            return self.decode(idx, state)
         
-    def forward_one(self, idx: int, state: dict):
+    def decode(self, idx: int, state: dict):
         z = self.rwkv.z
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
@@ -573,17 +502,17 @@ class RWKV_X(nn.Module):
         rwkv_id, attn_id = 0, 0
         for block in self.get_block_exe_order():
             if isinstance(block, RWKVBlock):
-                x, state['rwkv'], v_first = block.forward_one(x, state['rwkv'], v_first)
+                x, state['rwkv'], v_first = block.decode(x, state['rwkv'], v_first)
                 rwkv_id += 1
             else:
-                x, state['attn'][attn_id] = block.forward_one(x, state['attn'][attn_id])
+                x, state['attn'][attn_id] = block.decode(x, state['attn'][attn_id])
                 attn_id += 1
 
         x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
         x = x @ z['head.weight']
         return x, state
     
-    def forward_seq(self, idx: List[int], state: dict, full_output=False):
+    def prefill(self, idx: List[int], state: dict, full_output=False):
         z = self.rwkv.z
         x = z['emb.weight'][idx]
         v_first = torch.empty_like(x)
@@ -591,10 +520,13 @@ class RWKV_X(nn.Module):
         rwkv_id, attn_id = 0, 0
         for block in self.get_block_exe_order():
             if isinstance(block, RWKVBlock):
-                x, state['rwkv'], v_first, forget_idx = block.forward_seq(x, state['rwkv'], v_first)
+                x, state['rwkv'], v_first, memory_keep_idx = block.prefill(x, state['rwkv'], v_first)
                 rwkv_id += 1
             else:
-                x, state['attn'][attn_id] = block.forward_seq(x, state['attn'][attn_id], forget_idx)
+                x, state['attn'][attn_id] = block.prefill(x, state['attn'][attn_id])
+                # select memory here
+                state['attn'][attn_id]['k_cache'] = state['attn'][attn_id]['k_cache'].select(1, memory_keep_idx)
+                state['attn'][attn_id]['v_cache'] = state['attn'][attn_id]['v_cache'].select(1, memory_keep_idx)
                 attn_id += 1
 
         if not full_output:
