@@ -159,14 +159,12 @@ def RWKV_x070_CMix_seq(x, x_prev, x_k, K_, V_):
 
 
 class RWKV_x070(MyModule):
-    def __init__(self, model_state_dict, memory_keep_tokens: int = 64):
+    def __init__(self, model_state_dict, config):
         super().__init__()
         self.eval()
-        if memory_keep_tokens < 0:
-            raise ValueError("memory_keep_tokens must be >= 0")
         args = types.SimpleNamespace()
         self.args = args
-        self.memory_keep_tokens = memory_keep_tokens
+        self.config = config
         
         self.z = model_state_dict
         z = self.z
@@ -196,7 +194,9 @@ class RWKV_x070(MyModule):
 
         # core modification: construct block list
         self.blocks = nn.ModuleList([
-            RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd, self.memory_keep_tokens)
+            RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd, 
+                      memory_keep_tokens=config.memory_keep_tokens,
+                      memory_keep_ratio=config.memory_keep_ratio)
             for i in range(self.n_layer)
         ])
         torch.cuda.empty_cache()
@@ -233,7 +233,8 @@ class RWKV_x070(MyModule):
         
 
 class RWKVBlock(nn.Module):
-    def __init__(self, layer_id, z, n_head, head_size, n_embd, memory_keep_tokens):
+    def __init__(self, layer_id, z, n_head, head_size, n_embd, 
+                 memory_keep_tokens=None, memory_keep_ratio=None):
         super().__init__()
         self.layer_id = layer_id
         self.z = z
@@ -241,6 +242,7 @@ class RWKVBlock(nn.Module):
         self.head_size = head_size
         self.n_embd = n_embd
         self.memory_keep_tokens = memory_keep_tokens
+        self.memory_keep_ratio = memory_keep_ratio
 
     def calculate_layer_memory_loss(self, state, k, v):
         # restore v from state and k
@@ -296,11 +298,12 @@ class RWKVBlock(nn.Module):
         
         layer_memory_loss = self.calculate_layer_memory_loss(state, k, v)
         T = layer_memory_loss.size(0)
-        k = min(T, self.memory_keep_tokens)
-        if k == 0:
-            memory_keep_idx = torch.empty(0, dtype=torch.long, device=layer_memory_loss.device)
+        if self.memory_keep_ratio is not None:
+            k = max(1, int(T * self.memory_keep_ratio))
         else:
-            memory_keep_idx = torch.topk(layer_memory_loss, k=k, largest=True).indices
+            k = min(T, self.memory_keep_tokens)
+
+        memory_keep_idx = torch.topk(layer_memory_loss, k=k, largest=True).indices
 
         return x, state, v_first, memory_keep_idx
 
@@ -422,7 +425,18 @@ class RWKV_X_Config:
     n_head: int = 0
     n_embd: int = 0
     head_size: int = 64
-    memory_keep_tokens: int = 64
+    memory_keep_tokens: int = None
+    memory_keep_ratio: float = None
+
+    def __post_init__(self):
+        if self.memory_keep_tokens is not None and self.memory_keep_ratio is not None:
+            raise ValueError("Only one of memory_keep_tokens or memory_keep_ratio can be set.")
+        if self.memory_keep_tokens is None and self.memory_keep_ratio is None:
+            raise ValueError("Either memory_keep_tokens or memory_keep_ratio must be set.")
+        if self.memory_keep_tokens is not None and self.memory_keep_tokens <= 0:
+            raise ValueError("memory_keep_tokens must be > 0")
+        if self.memory_keep_ratio is not None and (self.memory_keep_ratio <= 0 or self.memory_keep_ratio > 1):
+            raise ValueError("memory_keep_ratio must be in the range (0, 1]")
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, config=None):
@@ -431,7 +445,7 @@ class RWKV_X(nn.Module):
         rwkv_state_dict, attn_state_dict, config = self.load_from_ckpt(model_path, strategy, config)
         self.rwkv = RWKV_x070(
             rwkv_state_dict,
-            memory_keep_tokens=config.memory_keep_tokens,
+            config,
         ).to(device=DEVICE).to(DTYPE)
         self.attn = nn.ModuleList([MemoryAttentionBlock(config) for _ in range(config.n_attn_layer)])
         self.attn.to(device=DEVICE).to(DTYPE)
@@ -470,6 +484,7 @@ class RWKV_X(nn.Module):
                 n_attn_layer=n_attn_layer,
                 n_head=n_head,
                 n_embd=n_embd,
+                memory_keep_tokens=128, # default to 128 tokens if not specified
             )
         else:
             config = RWKV_X_Config(
@@ -479,6 +494,7 @@ class RWKV_X(nn.Module):
                 n_embd=n_embd,
                 head_size=config.head_size,
                 memory_keep_tokens=config.memory_keep_tokens,
+                memory_keep_ratio=config.memory_keep_ratio,
             )
         return rwkv_state_dict, attn_state_dict, config
 
