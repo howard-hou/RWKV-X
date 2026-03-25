@@ -146,7 +146,10 @@ class EvalHarnessAdapter(HFLM):
 
     @property
     def max_length(self):
-        return 4096
+        ''' Return the maximum context length per forward pass.
+        at this time, not support multiple forward passes
+        '''
+        return 128_000
 
     @property
     def batch_size(self):
