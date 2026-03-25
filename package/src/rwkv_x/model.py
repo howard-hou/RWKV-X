@@ -159,11 +159,14 @@ def RWKV_x070_CMix_seq(x, x_prev, x_k, K_, V_):
 
 
 class RWKV_x070(MyModule):
-    def __init__(self, model_state_dict):
+    def __init__(self, model_state_dict, memory_keep_tokens: int = 64):
         super().__init__()
         self.eval()
+        if memory_keep_tokens < 0:
+            raise ValueError("memory_keep_tokens must be >= 0")
         args = types.SimpleNamespace()
         self.args = args
+        self.memory_keep_tokens = memory_keep_tokens
         
         self.z = model_state_dict
         z = self.z
@@ -193,7 +196,7 @@ class RWKV_x070(MyModule):
 
         # core modification: construct block list
         self.blocks = nn.ModuleList([
-            RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd)
+            RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd, self.memory_keep_tokens)
             for i in range(self.n_layer)
         ])
         torch.cuda.empty_cache()
@@ -230,13 +233,14 @@ class RWKV_x070(MyModule):
         
 
 class RWKVBlock(nn.Module):
-    def __init__(self, layer_id, z, n_head, head_size, n_embd):
+    def __init__(self, layer_id, z, n_head, head_size, n_embd, memory_keep_tokens):
         super().__init__()
         self.layer_id = layer_id
         self.z = z
         self.n_head = n_head
         self.head_size = head_size
         self.n_embd = n_embd
+        self.memory_keep_tokens = memory_keep_tokens
 
     def calculate_layer_memory_loss(self, state, k, v):
         # restore v from state and k
@@ -292,8 +296,11 @@ class RWKVBlock(nn.Module):
         
         layer_memory_loss = self.calculate_layer_memory_loss(state, k, v)
         T = layer_memory_loss.size(0)
-        k = 64 if T > 64 else T
-        memory_keep_idx = torch.topk(layer_memory_loss, k=k, largest=True).indices
+        k = min(T, self.memory_keep_tokens)
+        if k == 0:
+            memory_keep_idx = torch.empty(0, dtype=torch.long, device=layer_memory_loss.device)
+        else:
+            memory_keep_idx = torch.topk(layer_memory_loss, k=k, largest=True).indices
 
         return x, state, v_first, memory_keep_idx
 
@@ -415,13 +422,17 @@ class RWKV_X_Config:
     n_head: int = 0
     n_embd: int = 0
     head_size: int = 64
+    memory_keep_tokens: int = 64
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, config=None):
         super().__init__()
         print(f'Loading {model_path} ({strategy})\n')
         rwkv_state_dict, attn_state_dict, config = self.load_from_ckpt(model_path, strategy, config)
-        self.rwkv = RWKV_x070(rwkv_state_dict).to(device=DEVICE).to(DTYPE)
+        self.rwkv = RWKV_x070(
+            rwkv_state_dict,
+            memory_keep_tokens=config.memory_keep_tokens,
+        ).to(device=DEVICE).to(DTYPE)
         self.attn = nn.ModuleList([MemoryAttentionBlock(config) for _ in range(config.n_attn_layer)])
         self.attn.to(device=DEVICE).to(DTYPE)
         self.attn.load_state_dict(attn_state_dict, strict=True)
@@ -466,7 +477,8 @@ class RWKV_X(nn.Module):
                 n_attn_layer=n_attn_layer,
                 n_head=n_head,
                 n_embd=n_embd,
-                head_size=config.head_size
+                head_size=config.head_size,
+                memory_keep_tokens=config.memory_keep_tokens,
             )
         return rwkv_state_dict, attn_state_dict, config
 
