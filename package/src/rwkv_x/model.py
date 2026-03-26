@@ -441,7 +441,7 @@ class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy, mem_config=None):
         super().__init__()
         print(f'Loading {model_path} ({strategy})\n')
-        rwkv_state_dict, attn_state_dict, config = self.load_from_ckpt(model_path, strategy, mem_config)
+        rwkv_state_dict, attn_state_dict, config = self.load_from_ckpt(model_path, strategy)
         self.rwkv = RWKV_x070(
             rwkv_state_dict,
             mem_config if mem_config is not None else RWKV_X_Memory_Config(memory_keep_tokens=128),

@@ -24,7 +24,7 @@ from torch.nn import functional as F
 os.environ["RWKV_JIT_ON"] = '0'
 os.environ["RWKV_CUDA_ON"] = '1'
 os.environ["RWKV_V7_ON"] = "1"
-from rwkv_x.model import RWKV_X
+from rwkv_x.model import RWKV_X, RWKV_X_Memory_Config
 from rwkv_x.utils import PIPELINE
 
 from lm_eval import tasks, evaluator, utils
@@ -79,7 +79,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f'Loading model - {MODEL_NAME}')
 torch.cuda.set_device(args.device)
-model = RWKV_X(model_path=args.model_path, strategy='cuda fp16')
+mem_config = RWKV_X_Memory_Config(memory_keep_tokens=128)
+model = RWKV_X(model_path=args.model_path, strategy='cuda fp16', mem_config=mem_config)
 pipeline = PIPELINE(model)
 tokenizer = pipeline.tokenizer
 print(f"Model loaded on {args.device}")
