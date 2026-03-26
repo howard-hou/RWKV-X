@@ -198,36 +198,6 @@ class RWKV_x070(MyModule):
             for i in range(self.n_layer)
         ])
         torch.cuda.empty_cache()
-
-
-    @torch.inference_mode()
-    def forward_one(self, idx: int, state: List[torch.Tensor]):
-        z = self.z
-        x = z['emb.weight'][idx]
-        v_first = torch.empty_like(x)
-
-        for block in self.blocks:
-            x, state, v_first, k, v = block.forward_one(x, state, v_first)
-
-        x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
-        x = x @ z['head.weight']
-        return x, state, k, v
-
-    @torch.inference_mode()
-    def forward_seq(self, idx: List[int], state: List[torch.Tensor], full_output: bool = False):
-        z = self.z
-        x = z['emb.weight'][idx]
-        v_first = torch.empty_like(x)
-
-        for block in self.blocks:
-            x, state, v_first, k, v = block.forward_seq(x, state, v_first)
-
-        if not full_output:
-            x = x[-1]
-
-        x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
-        x = x @ z['head.weight']
-        return x, state, k, v
         
 
 class RWKVBlock(nn.Module):
