@@ -40,15 +40,15 @@ def calculate_headwise_memory_loss(state, k_list, v_list):
 
     all_layer_head_losses = []
     for i in range(n_layer):
-        wkv_state = state[i * 3 + 1].float()   # [H, K, V], e.g. [16, 64, 64]
+        wkv_state = state[i * 3 + 1].float()   # [H, V, K], e.g. [16, 64, 64]
         k = k_list[i].view(seq_len, n_head, head_size).float()   # [T, H, K]
         v = v_list[i].view(seq_len, n_head, head_size).float()   # [T, H, V]
 
         # restore v from state and k
-        # wkv_state: [H, K, V]
+        # wkv_state: [H, V, K]
         # k:         [T, H, K]
         # output:    [T, H, V]
-        v_restore = torch.einsum('hkv,thk->thv', wkv_state, k)
+        v_restore = torch.einsum('hvk,thk->thv', wkv_state, k)
 
         # keep head dimension, average only over head_size and token dims
         head_loss = ((v - v_restore) ** 2).mean(dim=-1).mean(dim=0)   # [H]

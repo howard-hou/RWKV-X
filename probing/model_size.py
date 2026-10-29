@@ -28,7 +28,7 @@ def calculate_memory_loss(state, k_list, v_list):
         wkv_state = state[i*3+1]
         k = k_list[i].view(T, n_head, head_size).float()
         v = v_list[i].view(T, n_head, head_size).float()
-        v_restore = torch.einsum('hkv,thk->thv', wkv_state, k)
+        v_restore = torch.einsum('hvk,thk->thv', wkv_state, k)
         v_loss = ((v - v_restore) ** 2).mean()
         all_layer_memory_loss.append(v_loss)
     all_layer_memory_loss = torch.stack(all_layer_memory_loss)
