@@ -212,13 +212,13 @@ class RWKVBlock(nn.Module):
 
     def calculate_layer_memory_loss(self, state, k, v):
         # restore v from state and k
-        # wkv_state: [H, K, V]
+        # wkv_state: [H, V, K]
         # k:         [T, H, K]
         # output:    [T]
-        wkv_state = state[self.layer_id * 3 + 1].float()   # [H, K, V], e.g. [16, 64, 64]
+        wkv_state = state[self.layer_id * 3 + 1].float()   # [H, V, K], e.g. [16, 64, 64]
         k = k.view(-1, self.n_head, self.head_size).float()   # [T, H, K]
         v = v.view(-1, self.n_head, self.head_size).float()   # [T, H, V]
-        v_restore = torch.einsum('hkv,thk->thv', wkv_state, k)
+        v_restore = torch.einsum('hvk,thk->thv', wkv_state, k)
         layer_memory_loss = ((v - v_restore) ** 2).mean(dim=-1).mean(dim=-1)   # [T]
         return layer_memory_loss
 
